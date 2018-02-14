@@ -2,7 +2,7 @@
 #define _DEFINES_H_
 
 #define SCIOND_API_PORT 3333
-#define DISPATCHER_DIR "/run/shm/dispatcher"
+#define DISPATCHER_DIR "/data/data/com.termux/files/run/shm/dispatcher"
 #define DEFAULT_DISPATCHER_ID "default"
 
 #define DISPATCHER_BUF_SIZE 65535

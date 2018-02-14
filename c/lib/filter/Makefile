@@ -34,11 +34,9 @@ $(DYNAMIC): $(OBJS)
 install: .installstamp
 
 .installstamp: $(TARGETS)
-	sudo cp $(TARGETS) $(PREFIX)/lib/
-	sudo ldconfig
+	cp $(TARGETS) $(PREFIX)/lib/
 	touch .installstamp
 
 uninstall:
 	$(foreach var,$(TARGETS),sudo rm -f $(PREFIX)/lib/$(var);)
-	sudo ldconfig
 	rm -f .installstamp
