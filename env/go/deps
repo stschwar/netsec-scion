@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
 
 # The $GO_INSTALL environment variable, if set, tells this script to
 # install/upgrade (as appropriate) a compatible Go version. This env var isn't

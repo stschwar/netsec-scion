@@ -3,7 +3,7 @@ go_installed() {
 }
 
 go_ver_check() {
-    go version | grep -q ' go1\.8\>'
+    go version | grep ' go1.8'
 }
 
 go_ver_msg() {
