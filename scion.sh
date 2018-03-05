@@ -21,7 +21,7 @@ cmd_topology() {
     python/topology/generator.py "$@" || exit 1
     if [ -n "$zkclean" ]; then
         echo "Deleting all Zookeeper state"
-        rm -rf /run/shm/scion-zk
+        rm -rf /data/data/com.termux/files/run/shm/scion-zk
         tools/zkcleanslate --zk 127.0.0.1:2181
     fi
 }

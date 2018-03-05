@@ -70,11 +70,11 @@ SCION_DISPATCHER_ADDR = "/data/data/com.termux/files/run/shm/dispatcher.sock"
 #: Default SCION dispatcher port
 SCION_DISPATCHER_PORT = 3334
 #: Default SCION dispatcher UNIX socket directory
-DISPATCHER_DIR = "/data/data/com.termux/files/run/shm/dispatcher"
+DISPATCHER_DIR = "/data/data/com.termux/files/run/shm/dispatcher/"
 #: Default SCION dispatcher ID
 DEFAULT_DISPATCHER_ID = "default"
 #: Default SCION daemon UNIX socket directory
-SCIOND_API_SOCKDIR = "/data/data/com.termux/files/run/shm/sciond"
+SCIOND_API_SOCKDIR = "/data/data/com.termux/files/run/shm/sciond/"
 #: Environment variable to specify the SCION daemon API address
 SCIOND_API_PATH_ENV_VAR = "SCIOND_PATH"
 #: Default SCION daemon API UNIX socket

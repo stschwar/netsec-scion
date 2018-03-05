@@ -1,4 +1,4 @@
-.PHONY: all clean test coverage lint deps_proto deps depspurge proto bin libs hsr
+.PHONY: <all clean test coverage lint deps_proto deps depspurge proto bin libs hsr
 
 SHELL=/bin/bash
 LOCAL_DIRS = $(shell find * -maxdepth 0 -type d | grep -v '^vendor$$')
@@ -73,4 +73,4 @@ libs: deps_proto
 
 hsr: libs
 	GOBIN=${LOCAL_GOBIN} go install -v -tags "$(GOTAGS) hsr" ./border/...
-	sudo setcap cap_dac_read_search,cap_dac_override,cap_sys_admin,cap_net_raw+ep ../bin/border
+	 setcap cap_dac_read_search,cap_dac_override,cap_sys_admin,cap_net_raw+ep ../bin/border

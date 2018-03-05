@@ -59,11 +59,9 @@ doinstall: .installstamp
 PREFIX ?= /usr/local
 build/$(SHARED): $(SHARED)
 .installstamp: build/$(SHARED)
-	sudo cp build/$(SHARED) $(PREFIX)/lib/
-	sudo ldconfig
+	cp build/$(SHARED) $(PREFIX)/lib/
 	touch .installstamp
 
 uninstall:
-	sudo rm -r $(PREFIX)/lib/$(SHARED)
-	sudo ldconfig
+	rm -r $(PREFIX)/lib/$(SHARED)
 	rm -f .installstamp

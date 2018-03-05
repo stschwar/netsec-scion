@@ -38,5 +38,5 @@ install: .installstamp
 	touch .installstamp
 
 uninstall:
-	$(foreach var,$(TARGETS),sudo rm -f $(PREFIX)/lib/$(var);)
+	$(foreach var,$(TARGETS),rm -f $(PREFIX)/lib/$(var);)
 	rm -f .installstamp
