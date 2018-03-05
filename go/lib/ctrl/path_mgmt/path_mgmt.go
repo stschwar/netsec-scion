@@ -20,8 +20,8 @@ import (
 
 	//log "github.com/inconshreveable/log15"
 
-	"github.com/netsec-ethz/scion/go/lib/common"
-	"github.com/netsec-ethz/scion/go/proto"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/proto"
 )
 
 // union represents the contents of the unnamed capnp union.
@@ -60,7 +60,8 @@ func (u *union) set(c proto.Cerealizable) error {
 		u.Which = proto.PathMgmt_Which_ifStateInfos
 		u.IFStateInfos = p
 	default:
-		return common.NewCError("Unsupported path mgmt union type (set)", "type", common.TypeOf(c))
+		return common.NewBasicError("Unsupported path mgmt union type (set)", nil,
+			"type", common.TypeOf(c))
 	}
 	return nil
 }
@@ -82,18 +83,19 @@ func (u *union) get() (proto.Cerealizable, error) {
 	case proto.PathMgmt_Which_ifStateInfos:
 		return u.IFStateInfos, nil
 	}
-	return nil, common.NewCError("Unsupported path mgmt union type (get)", "type", u.Which)
+	return nil, common.NewBasicError("Unsupported path mgmt union type (get)", nil, "type", u.Which)
 }
 
 var _ proto.Cerealizable = (*Pld)(nil)
 
 type Pld struct {
 	union
+	*Data
 }
 
 // NewPld creates a new path mgmt payload, containing the supplied Cerealizable instance.
-func NewPld(u proto.Cerealizable) (*Pld, error) {
-	p := &Pld{}
+func NewPld(u proto.Cerealizable, d *Data) (*Pld, error) {
+	p := &Pld{Data: d}
 	return p, p.union.set(u)
 }
 
@@ -114,4 +116,8 @@ func (p *Pld) String() string {
 		desc = append(desc, fmt.Sprintf("%+v", u))
 	}
 	return strings.Join(desc, " ")
+}
+
+type Data struct {
+	// For passing any future non-union data.
 }

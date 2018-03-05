@@ -37,11 +37,12 @@ from lib.defines import (
 from lib.errors import SCIONBaseError
 from lib.log import add_formatter, Rfc3339Formatter
 from lib.path_seg_meta import PathSegMeta
-from lib.packet.ctrl_pld import CtrlPayload
+from lib.packet.ctrl_pld import CtrlPayload, mk_ctrl_req_id
 from lib.packet.path_mgmt.base import PathMgmt
 from lib.packet.path_mgmt.ifstate import IFStatePayload
 from lib.packet.path_mgmt.rev_info import RevocationInfo
-from lib.packet.path_mgmt.seg_recs import PathRecordsReply, PathSegmentRecords
+from lib.packet.path_mgmt.seg_req import PathSegmentReply
+from lib.packet.path_mgmt.seg_recs import PathSegmentRecords
 from lib.packet.scmp.types import SCMPClass, SCMPPathClass
 from lib.packet.svc import SVCType
 from lib.path_db import DBResult, PathSegmentDB
@@ -116,10 +117,10 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
             PayloadClass.PATH: {
                 PMT.IFSTATE_INFOS: self.handle_ifstate_infos,
                 PMT.REQUEST: self.path_resolution,
-                PMT.REPLY: self.handle_path_segment_record,
-                PMT.REG: self.handle_path_segment_record,
+                PMT.REPLY: self.handle_path_reply,
+                PMT.REG: self.handle_seg_recs,
                 PMT.REVOCATION: self._handle_revocation,
-                PMT.SYNC: self.handle_path_segment_record,
+                PMT.SYNC: self.handle_seg_recs,
             },
             PayloadClass.CERT: {
                 CertMgmtType.CERT_CHAIN_REQ: self.process_cert_chain_request,
@@ -182,6 +183,12 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
     def _rev_entries_handler(self, raw_entries):
         for raw in raw_entries:
             rev_info = RevocationInfo.from_raw(raw)
+            try:
+                rev_info.validate()
+            except SCIONBaseError as e:
+                logging.warning("Failed to validate RevInfo from zk: %s\n%s",
+                                e, rev_info.short_desc())
+                continue
             self._remove_revoked_segments(rev_info)
 
     def _add_rev_mappings(self, pcb):
@@ -231,10 +238,23 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         assert isinstance(infos, IFStatePayload), type(infos)
         for info in infos.iter_infos():
             if not info.p.active and info.p.revInfo:
+                rev_info = info.rev_info()
+                try:
+                    rev_info.validate()
+                except SCIONBaseError as e:
+                    logging.warning("Failed to validate IFStateInfo RevInfo from %s: %s\n%s",
+                                    meta, e, rev_info.short_desc())
+                    continue
                 self._handle_revocation(CtrlPayload(PathMgmt(info.rev_info())), meta)
 
     def _handle_scmp_revocation(self, pld, meta):
         rev_info = RevocationInfo.from_raw(pld.info.rev_info)
+        try:
+            rev_info.validate()
+        except SCIONBaseError as e:
+            logging.warning("Failed to validate SCMP RevInfo from %s: %s\n%s",
+                            meta, e, rev_info.short_desc())
+            return
         self._handle_revocation(CtrlPayload(PathMgmt(rev_info)), meta)
 
     def _handle_revocation(self, cpld, meta):
@@ -246,6 +266,16 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         pmgt = cpld.union
         rev_info = pmgt.union
         assert isinstance(rev_info, RevocationInfo), type(rev_info)
+        # Validate before checking for presense in self.revocations, as that will trigger an assert
+        # failure if the rev_info is invalid.
+        try:
+            rev_info.validate()
+        except SCIONBaseError as e:
+            # Validation already done in the IFStateInfo and SCMP paths, so a failure here means
+            # it's from a CtrlPld.
+            logging.warning("Failed to validate CtrlPld RevInfo from %s: %s\n%s",
+                            meta, e, rev_info.short_desc())
+            return
 
         if rev_info in self.revocations:
             return
@@ -307,7 +337,7 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         """
         raise NotImplementedError
 
-    def _send_path_segments(self, req, meta, logger, up=None, core=None, down=None):
+    def _send_path_segments(self, req, req_id, meta, logger, up=None, core=None, down=None):
         """
         Sends path-segments to requester (depending on Path Server's location).
         """
@@ -320,11 +350,12 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
                            (req.short_desc(), meta))
             return
         revs_to_add = self._peer_revs_for_segs(all_segs)
-        pld = PathRecordsReply.from_values(
+        recs = PathSegmentRecords.from_values(
             {PST.UP: up, PST.CORE: core, PST.DOWN: down},
             revs_to_add
         )
-        self.send_meta(CtrlPayload(PathMgmt(pld)), meta)
+        pld = PathSegmentReply.from_values(req.copy(), recs)
+        self.send_meta(CtrlPayload(PathMgmt(pld), req_id=req_id), meta)
         logger.info("Sending PATH_REPLY with %d segment(s).", len(all_segs))
 
     def _peer_revs_for_segs(self, segs):
@@ -349,11 +380,11 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         # Serve pending requests.
         with self.pen_req_lock:
             for key in self.pending_req:
-                for req_id, (req, meta, logger) in self.pending_req[key].items():
-                    if self.path_resolution(CtrlPayload(PathMgmt(req)), meta,
-                                            new_request=False, logger=logger, req_id=req_id):
+                for req_key, (req, req_id, meta, logger) in self.pending_req[key].items():
+                    if self.path_resolution(CtrlPayload(PathMgmt(req), req_id=req_id), meta,
+                                            new_request=False, logger=logger):
                         meta.close()
-                        del self.pending_req[key][req_id]
+                        del self.pending_req[key][req_key]
                 if not self.pending_req[key]:
                     rem_keys.append(key)
             for key in rem_keys:
@@ -372,12 +403,21 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         if raw_entries:
             logging.debug("Processed %s segments from ZK", len(raw_entries))
 
-    def handle_path_segment_record(self, cpld, meta):
+    def handle_path_reply(self, cpld, meta):
+        pmgt = cpld.union
+        reply = pmgt.union
+        assert isinstance(reply, PathSegmentReply), type(reply)
+        self._handle_seg_recs(reply.recs(), cpld.req_id, meta)
+
+    def handle_seg_recs(self, cpld, meta):
+        pmgt = cpld.union
+        seg_recs = pmgt.union
+        self._handle_seg_recs(seg_recs, cpld.req_id, meta)
+
+    def _handle_seg_recs(self, seg_recs, req_id, meta):
         """
         Handles paths received from the network.
         """
-        pmgt = cpld.union
-        seg_recs = pmgt.union
         assert isinstance(seg_recs, PathSegmentRecords), type(seg_recs)
         params = self._dispatch_params(seg_recs, meta)
         # Add revocations for peer interfaces included in the path segments.
@@ -387,7 +427,7 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         for type_, pcb in seg_recs.iter_pcbs():
             seg_meta = PathSegMeta(pcb, self.continue_seg_processing, meta,
                                    type_, params)
-            self._process_path_seg(seg_meta)
+            self._process_path_seg(seg_meta, req_id)
 
     def continue_seg_processing(self, seg_meta):
         """
@@ -409,9 +449,6 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         Handle beacon extensions.
         """
         # Handle PCB extensions:
-        if pcb.is_sibra():
-            # TODO(Sezer): Implement sibra extension handling
-            logging.debug("%s", pcb.sibra_ext)
         for asm in pcb.iter_asms():
             pol = asm.routing_pol_ext()
             if pol:
@@ -475,7 +512,7 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
             yield(pcbs)
 
     @abstractmethod
-    def path_resolution(self, path_request, meta, new_request=True, logger=None, req_id=None):
+    def path_resolution(self, path_request, meta, new_request=True, logger=None):
         """
         Handles all types of path request.
         """
@@ -500,9 +537,10 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         while targets:
             (seg_req, logger) = targets.pop(0)
             meta = self._build_meta(ia=src_ia, path=path, host=SVCType.PS_A, reuse=True)
-            self.send_meta(CtrlPayload(PathMgmt(seg_req)), meta)
-            logger.info("Waiting request (%s) sent to %s via %s",
-                        seg_req.short_desc(), meta, pcb.short_desc())
+            req_id = mk_ctrl_req_id()
+            self.send_meta(CtrlPayload(PathMgmt(seg_req), req_id=req_id), meta)
+            logger.info("Waiting request (%s) sent to %s via %s [id: %016x]",
+                        seg_req.short_desc(), meta, pcb.short_desc(), req_id)
 
     def _share_via_zk(self):
         if not self._segs_to_zk:
@@ -545,20 +583,20 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
         Initializes the request logger.
         """
         self._request_logger = logging.getLogger("RequestLogger")
-        # Create new formatter to include the random request id and the request in the log.
+        # Create new formatter to include the request in the log.
         formatter = formatter = Rfc3339Formatter(
             "%(asctime)s [%(levelname)s] (%(threadName)s) %(message)s "
-            "{id=%(id)s, req=%(req)s, from=%(from)s}")
+            "{id=%(id)s, from=%(from)s}")
         add_formatter('RequestLogger', formatter)
 
-    def get_request_logger(self, req, req_id, meta):
+    def get_request_logger(self, req_id, meta):
         """
-        Returns a logger adapter for 'req'.
+        Returns a logger adapter for a request.
         """
         # Create a logger for the request to log with context.
         return logging.LoggerAdapter(
             self._request_logger,
-            {"id": "%08x" % req_id, "req": req.short_desc(), "from": str(meta)})
+            {"id": req_id, "from": str(meta)})
 
     def _init_metrics(self):
         super()._init_metrics()

@@ -23,11 +23,12 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"github.com/netsec-ethz/scion/go/lib/addr"
-	"github.com/netsec-ethz/scion/go/lib/common"
-	"github.com/netsec-ethz/scion/go/lib/ctrl/seg"
-	"github.com/netsec-ethz/scion/go/lib/pathdb/query"
-	"github.com/netsec-ethz/scion/go/lib/spath"
+	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/ctrl/seg"
+	"github.com/scionproto/scion/go/lib/pathdb/query"
+	"github.com/scionproto/scion/go/lib/spath"
+	"github.com/scionproto/scion/go/proto"
 )
 
 var (
@@ -73,33 +74,33 @@ func allocPathSegment(ifs []uint64, expiration uint32) (*seg.PathSegment, common
 		{
 			RawIA: ia13.IAInt(),
 			HopEntries: []*seg.HopEntry{
-				allocHopEntry(ia13, ia16, rawHops[0]),
+				allocHopEntry(&addr.ISD_AS{}, ia16, rawHops[0]),
 			},
 		},
 		{
 			RawIA: ia16.IAInt(),
 			HopEntries: []*seg.HopEntry{
 				allocHopEntry(ia13, ia19, rawHops[1]),
-				allocHopEntry(ia13, ia14, rawHops[2]),
+				allocHopEntry(ia14, ia19, rawHops[2]),
 			},
 		},
 		{
 			RawIA: ia19.IAInt(),
 			HopEntries: []*seg.HopEntry{
-				allocHopEntry(ia16, ia19, rawHops[3]),
+				allocHopEntry(ia16, &addr.ISD_AS{}, rawHops[3]),
 			},
 		},
 	}
-	info := spath.InfoField{
+	info := &spath.InfoField{
 		TsInt: expiration,
 		ISD:   1,
 		Hops:  3,
 	}
-	rawInfo := make(common.RawBytes, 8)
-	info.Write(rawInfo)
-	pseg := &seg.PathSegment{
-		RawInfo:   rawInfo,
-		ASEntries: ases,
+	pseg, _ := seg.NewSeg(info)
+	for _, ase := range ases {
+		if err := pseg.AddASEntry(ase, proto.SignType_none, nil); err != nil {
+			fmt.Printf("Error adding ASEntry: %v", err)
+		}
 	}
 	segID, _ := pseg.ID()
 	return pseg, segID
@@ -148,11 +149,11 @@ func checkSegments(t *testing.T, b *Backend, segRowID int, segID common.RawBytes
 	if err != nil {
 		t.Fatal("checkSegments: Call", "err", err)
 	}
-	pseg, err := seg.NewFromRaw(common.RawBytes(rawSeg))
+	pseg, err := seg.NewSegFromRaw(common.RawBytes(rawSeg))
 	if err != nil {
 		t.Fatal("checkSegments: Parse", "err", err)
 	}
-	info, _ := pseg.Info()
+	info, _ := pseg.InfoF()
 	SoMsg("RowID match", ID, ShouldEqual, segRowID)
 	SoMsg("Timestamps match", info.TsInt, ShouldEqual, ts)
 }

@@ -26,17 +26,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/syndtr/gocapability/capability"
 
-	"github.com/netsec-ethz/scion/go/border/conf"
-	"github.com/netsec-ethz/scion/go/border/metrics"
-	"github.com/netsec-ethz/scion/go/border/netconf"
-	"github.com/netsec-ethz/scion/go/border/rcmn"
-	"github.com/netsec-ethz/scion/go/border/rctx"
-	"github.com/netsec-ethz/scion/go/border/rpkt"
-	"github.com/netsec-ethz/scion/go/lib/common"
-	"github.com/netsec-ethz/scion/go/lib/overlay/conn"
-	"github.com/netsec-ethz/scion/go/lib/prom"
-	"github.com/netsec-ethz/scion/go/lib/ringbuf"
-	"github.com/netsec-ethz/scion/go/lib/topology"
+	"github.com/scionproto/scion/go/border/conf"
+	"github.com/scionproto/scion/go/border/ifstate"
+	"github.com/scionproto/scion/go/border/metrics"
+	"github.com/scionproto/scion/go/border/netconf"
+	"github.com/scionproto/scion/go/border/rcmn"
+	"github.com/scionproto/scion/go/border/rctx"
+	"github.com/scionproto/scion/go/border/rpkt"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/overlay/conn"
+	"github.com/scionproto/scion/go/lib/prom"
+	"github.com/scionproto/scion/go/lib/ringbuf"
+	"github.com/scionproto/scion/go/lib/topology"
 )
 
 type setupNetHook func(r *Router, ctx *rctx.Ctx,
@@ -96,7 +97,7 @@ func (r *Router) setup() error {
 func (r *Router) clearCapabilities() error {
 	caps, err := capability.NewPid(0)
 	if err != nil {
-		return common.NewCError("Error retrieving capabilities", "err", err)
+		return common.NewBasicError("Error retrieving capabilities", err)
 	}
 	log.Debug("Startup capabilities", "caps", caps)
 	caps.Clear(capability.CAPS)
@@ -140,6 +141,14 @@ func (r *Router) setupNewContext(config *conf.Conf) error {
 	// Start external output functions.
 	for _, s := range ctx.ExtSockOut {
 		s.Start()
+	}
+	// Clean-up interface state infos that are not present anymore.
+	if oldCtx != nil {
+		for ifID := range oldCtx.Conf.Topo.IFInfoMap {
+			if _, ok := ctx.Conf.Topo.IFInfoMap[ifID]; !ok {
+				ifstate.DeleteState(ifID)
+			}
+		}
 	}
 	return nil
 }
@@ -253,7 +262,7 @@ func addPosixLocal(r *Router, ctx *rctx.Ctx, idx int, ba *topology.AddrInfo,
 	// Listen on the socket.
 	over, err := conn.New(ba, nil, labels)
 	if err != nil {
-		return common.NewCError("Unable to listen on local socket", "err", err)
+		return common.NewBasicError("Unable to listen on local socket", err)
 	}
 	// Find interfaces that use this local address.
 	var ifids []common.IFIDType
@@ -320,7 +329,7 @@ func addPosixIntf(r *Router, ctx *rctx.Ctx, intf *netconf.Interface,
 	ba := intf.IFAddr.BindAddrInfo(intf.IFAddr.Overlay)
 	c, err := conn.New(ba, intf.RemoteAddr, labels)
 	if err != nil {
-		return common.NewCError("Unable to listen on external socket", "err", err)
+		return common.NewBasicError("Unable to listen on external socket", err)
 	}
 	ifids := []common.IFIDType{intf.Id}
 	// Setup input goroutine.
