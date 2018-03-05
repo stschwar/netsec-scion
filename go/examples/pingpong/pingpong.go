@@ -12,17 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Simple echo application for SCION connectivity tests.
+// +build ignore
+
+// Simple application for SCION connectivity using the snet library.
 package main
 
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"time"
 
 	log "github.com/inconshreveable/log15"
-	"github.com/lucas-clemente/quic-go/qerr"
+	//"github.com/lucas-clemente/quic-go"
+	//"github.com/lucas-clemente/quic-go/qerr"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	liblog "github.com/scionproto/scion/go/lib/log"
@@ -33,7 +37,7 @@ import (
 const (
 	DefaultInterval = 2 * time.Second
 	DefaultTimeout  = 2 * time.Second
-	MaxEchoes       = 1 << 16
+	MaxPings        = 1 << 16
 	ReqMsg          = "ping!"
 	ReplyMsg        = "pong!"
 )
@@ -45,14 +49,16 @@ func GetDefaultSCIONDPath(ia *addr.ISD_AS) string {
 var (
 	local      snet.Addr
 	remote     snet.Addr
-	id         = flag.String("id", "echo", "Element ID")
+	id         = flag.String("id", "pingpong", "Element ID")
 	mode       = flag.String("mode", "client", "Run in client or server mode")
 	sciond     = flag.String("sciond", "", "Path to sciond socket")
 	dispatcher = flag.String("dispatcher", "/run/shm/dispatcher/default.sock",
 		"Path to dispatcher socket")
 	count = flag.Int("count", 0,
-		fmt.Sprintf("Number of echoes, between 0 and %d; a count of 0 means infinity", MaxEchoes))
-	interval = flag.Duration("interval", DefaultInterval, "time between echoes")
+		fmt.Sprintf("Number of pings, between 0 and %d; a count of 0 means infinity", MaxPings))
+	timeout = flag.Duration("timeout", DefaultTimeout,
+		"Timeout for the ping response")
+	interval = flag.Duration("interval", DefaultInterval, "time between pings")
 )
 
 func init() {
@@ -86,14 +92,14 @@ func validateFlags() {
 	if *sciond == "" {
 		*sciond = GetDefaultSCIONDPath(local.IA)
 	}
-	if *count < 0 || *count > MaxEchoes {
-		LogFatal("Invalid count", "min", 0, "max", MaxEchoes, "actual", *count)
+	if *count < 0 || *count > MaxPings {
+		LogFatal("Invalid count", "min", 0, "max", MaxPings, "actual", *count)
 	}
 }
 
-// Client dials to a remote SCION address and repeatedly sends echo request
-// messages while receiving echo reply messages. For each successful echo, a
-// message with the round trip time is printed. On errors (including timeouts),
+// Client dials to a remote SCION address and repeatedly sends ping messages
+// while receiving pong messages. For each successful ping-pong, a message
+// with the round trip time is printed. On errors (including timeouts),
 // the Client exits.
 func Client() {
 	initNetwork()
@@ -120,10 +126,15 @@ func Client() {
 			time.Sleep(*interval)
 		}
 
-		// Send echo request to destination
+		// Send ping message to destination
 		before := time.Now()
 		written, err := qstream.Write([]byte(ReqMsg))
 		if err != nil {
+			//qer := qerr.ToQuicError(err)
+			//if qer.ErrorCode == qerr.NetworkIdleTimeout {
+			//	log.Debug("The connection timed out due to no network activity")
+			//	break
+			//}
 			log.Error("Unable to write", "err", err)
 			continue
 		}
@@ -133,17 +144,21 @@ func Client() {
 			continue
 		}
 
-		// Receive echo reply with timeout
-		err = qstream.SetReadDeadline(time.Now().Add(DefaultTimeout))
+		// Receive pong message with timeout
+		err = qstream.SetReadDeadline(time.Now().Add(*timeout))
 		if err != nil {
 			LogFatal("SetReadDeadline failed", "err", err)
 		}
 		read, err := qstream.Read(b)
 		if err != nil {
-			qer := qerr.ToQuicError(err)
-			if qer.ErrorCode == qerr.PeerGoingAway {
-				log.Debug("Quic peer disconnected")
-				break
+			//qer := qerr.ToQuicError(err)
+			//if qer.ErrorCode == qerr.PeerGoingAway {
+			//	log.Debug("Quic peer disconnected")
+			//	break
+			//}
+			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+				log.Debug("ReadDeadline missed", "err", err)
+				continue
 			}
 			log.Error("Unable to read", "err", err)
 			continue
@@ -158,7 +173,7 @@ func Client() {
 	}
 }
 
-// Server listens on a SCION address and replies to any echo request messages.
+// Server listens on a SCION address and replies to any ping message.
 // On any error, the server exits.
 func Server() {
 	initNetwork()
@@ -169,40 +184,13 @@ func Server() {
 		LogFatal("Unable to listen", "err", err)
 	}
 	log.Debug("Listening", "local", qsock.Addr())
-	qsess, err := qsock.Accept()
-	if err != nil {
-		LogFatal("Unable to accept quic session", "err", err)
-	}
-	log.Debug("Quic session accepted", "src", qsess.RemoteAddr())
-	qstream, err := qsess.AcceptStream()
-	if err != nil {
-		LogFatal("Unable to accept quic stream", "err", err)
-	}
-
-	b := make([]byte, 1<<12)
 	for {
-		// Receive echo request
-		read, err := qstream.Read(b)
+		qsess, err := qsock.Accept()
 		if err != nil {
-			qer := qerr.ToQuicError(err)
-			if qer.ErrorCode == qerr.PeerGoingAway {
-				log.Debug("Quic peer disconnected")
-				break
-			}
-			LogFatal("Unable to read", "err", err)
+			LogFatal("Unable to accept quic session", "err", err)
 		}
-		if string(b[:read]) != ReqMsg {
-			fmt.Println("Received bad message", "expected", ReqMsg,
-				"actual", string(b[:read]))
-		}
-
-		// Send echo reply
-		written, err := qstream.Write([]byte(ReplyMsg))
-		if err != nil {
-			LogFatal("Unable to write", "err", err)
-		} else if written != len(ReplyMsg) {
-			LogFatal("Wrote incomplete message", "expected", len(ReplyMsg), "actual", written)
-		}
+		log.Debug("Quic session accepted", "src", qsess.RemoteAddr())
+		go handleClient(qsess)
 	}
 }
 
@@ -216,6 +204,40 @@ func initNetwork() {
 		LogFatal("Unable to initialize QUIC/SCION", "err", err)
 	}
 	log.Debug("QUIC/SCION successfully initialized")
+}
+
+func handleClient( /*qsess quic.Session*/ ) {
+	qstream, err := qsess.AcceptStream()
+	if err != nil {
+		LogFatal("Unable to accept quic stream", "err", err)
+	}
+
+	b := make([]byte, 1<<12)
+	for {
+		// Receive ping message
+		read, err := qstream.Read(b)
+		if err != nil {
+			//qer := qerr.ToQuicError(err)
+			//if qer.ErrorCode == qerr.PeerGoingAway {
+			//	log.Debug("Quic peer disconnected")
+			//	break
+			//}
+			log.Error("Unable to read", "err", err)
+			break
+		}
+		if string(b[:read]) != ReqMsg {
+			fmt.Println("Received bad message", "expected", ReqMsg,
+				"actual", string(b[:read]))
+		}
+
+		// Send pong message
+		written, err := qstream.Write([]byte(ReplyMsg))
+		if err != nil {
+			LogFatal("Unable to write", "err", err)
+		} else if written != len(ReplyMsg) {
+			LogFatal("Wrote incomplete message", "expected", len(ReplyMsg), "actual", written)
+		}
+	}
 }
 
 type Address snet.Addr
