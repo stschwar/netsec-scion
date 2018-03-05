@@ -35,16 +35,20 @@ go_install() {
     local src sum
     case "$(uname -m)" in
         x86_64)
-            src=https://storage.googleapis.com/golang/go1.8.3.linux-amd64.tar.gz
-            sum=1862f4c3d3907e59b04a757cfda0ea7aa9ef39274af99a784f5be843c80c6772
+            src=https://dl.google.com/go/go1.9.4.linux-amd64.tar.gz
+            sum=15b0937615809f87321a457bb1265f946f9f6e736c563d6c5e0bd2c22e44f779
             ;;
         i?86)
-            src=https://storage.googleapis.com/golang/go1.8.3.linux-386.tar.gz
-            sum=ff4895eb68fb1daaec41c540602e8bb4c1e8bb2f0e7017367171913fc9995ed2
+            src=https://dl.google.com/go/go1.9.4.linux-386.tar.gz
+            sum=d440aee90dad851630559bcee2b767b543ce7e54f45162908f3e12c3489888ab
             ;;
-        arm*|aarch*)
-            src=https://storage.googleapis.com/golang/go1.8.3.linux-armv6l.tar.gz
-            sum=3c30a3e24736ca776fc6314e5092fb8584bd3a4a2c2fa7307ae779ba2735e668
+        arm*)
+            src=https://dl.google.com/go/go1.9.4.linux-armv6l.tar.gz
+            sum=3c8cf3f79754a9fd6b33e2d8f930ee37d488328d460065992c72bc41c7b41a49
+            ;;
+        aarch64)
+            src=https://dl.google.com/go/go1.9.4.linux-arm64.tar.gz
+            sum=41a71231e99ccc9989867dce2fcb697921a68ede0bd06fc288ab6c2f56be8864
             ;;
         *)
             echo "ERROR: unsupported architecture '$(uname -m)'"
@@ -54,7 +58,7 @@ go_install() {
     file="${tmpdir:?}/$(basename ${src:?})"
     echo "$sum  $file"  > "$tmpdir/SHA256SUM"
     echo "Downloading $src to $file"
-    curl -# "$src" -o "$file"
+    curl -L# "$src" -o "$file"
     echo "$sum $file" | sha256sum -c -
     echo "Installing to /usr/local/go. Ensure that /usr/local/go/bin is in your \$PATH"
     sudo tar -C /usr/local -xf "$file"

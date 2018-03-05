@@ -19,14 +19,15 @@ import (
 
 	log "github.com/inconshreveable/log15"
 
-	"github.com/netsec-ethz/scion/go/lib/common"
-	"github.com/netsec-ethz/scion/go/lib/ctrl"
-	liblog "github.com/netsec-ethz/scion/go/lib/log"
-	"github.com/netsec-ethz/scion/go/lib/pathmgr"
-	"github.com/netsec-ethz/scion/go/lib/spath"
-	"github.com/netsec-ethz/scion/go/sig/disp"
-	"github.com/netsec-ethz/scion/go/sig/mgmt"
-	"github.com/netsec-ethz/scion/go/sig/siginfo"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/ctrl"
+	liblog "github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/pathmgr"
+	"github.com/scionproto/scion/go/lib/spath"
+	"github.com/scionproto/scion/go/sig/disp"
+	"github.com/scionproto/scion/go/sig/mgmt"
+	"github.com/scionproto/scion/go/sig/sigcmn"
+	"github.com/scionproto/scion/go/sig/siginfo"
 )
 
 const (
@@ -41,8 +42,6 @@ type sessMonitor struct {
 	log.Logger
 	// the Session this instance is monitoring.
 	sess *Session
-	// the current map of SIGs for the remote AS
-	sigMap siginfo.SigMap
 	// the (filtered) pool of paths to the remote AS, maintained by pathmgr.
 	pool *pathmgr.SyncPaths
 	// the pool of paths this session is currently using, frequently refreshed from pool.
@@ -80,7 +79,6 @@ func (sm *sessMonitor) run() {
 	disp.Dispatcher.Register(disp.RegPollRep, disp.MkRegPollKey(sm.sess.IA, sm.sess.SessId), regc)
 	sm.lastReply = time.Now()
 	sm.Info("sessMonitor: starting")
-	defer sm.Info("sessMonitor: stopped")
 Top:
 	for {
 		select {
@@ -89,13 +87,18 @@ Top:
 		case <-reqTick.C:
 			// Update paths and sigs
 			sm.sessPathPool.update(sm.pool.Load().APS)
-			sm.sigMap = sm.sess.sigMapF()
 			sm.updateRemote()
 			sm.sendReq()
 		case rpld := <-regc:
 			sm.handleRep(rpld)
 		}
 	}
+	err := disp.Dispatcher.Unregister(disp.RegPollRep, disp.MkRegPollKey(sm.sess.IA,
+		sm.sess.SessId))
+	if err != nil {
+		log.Error("sessMonitor: unable to unregister from ctrl dispatcher", "err", err)
+	}
+	sm.Info("sessMonitor: stopped")
 }
 
 func (sm *sessMonitor) updateRemote() {
@@ -114,10 +117,10 @@ func (sm *sessMonitor) updateRemote() {
 			currSig.Fail()
 		}
 		if currSessPath != nil {
+			// FIXME(kormat): these debug statements should be converted to prom metrics.
+			sm.Debug("Timeout", "remote", currRemote, "duration", since)
 			currSessPath.fail()
 		}
-		// FIXME(kormat): these debug statements should be converted to prom metrics.
-		sm.Debug("Timeout", "remote", currRemote, "duration", since)
 		currSig = sm.getNewSig(currSig)
 		currSessPath = sm.getNewPath(currSessPath)
 		sm.needUpdate = true
@@ -127,7 +130,7 @@ func (sm *sessMonitor) updateRemote() {
 			sm.Debug("No remote SIG", "remote", currRemote)
 			currSig = sm.getNewSig(nil)
 			sm.needUpdate = true
-		} else if _, ok := sm.sigMap[currSig.Id]; !ok {
+		} else if _, ok := sm.sess.sigMap.Load(currSig.Id); !ok {
 			// Current SIG is no longer listed, need to switch to a new one.
 			sm.Debug("Current SIG invalid", "remote", currRemote)
 			currSig = sm.getNewSig(nil)
@@ -151,12 +154,12 @@ func (sm *sessMonitor) updateRemote() {
 func (sm *sessMonitor) getNewSig(old *siginfo.Sig) *siginfo.Sig {
 	if old != nil {
 		// Try to get a different SIG, if possible.
-		if sig := sm.sigMap.GetSig(old.Id); sig != nil {
+		if sig := sm.sess.sigMap.GetSig(old.Id); sig != nil {
 			return sig
 		}
 	}
 	// Get SIG with lowest failure count.
-	return sm.sigMap.GetSig("")
+	return sm.sess.sigMap.GetSig("")
 }
 
 func (sm *sessMonitor) getNewPath(old *sessPath) *sessPath {
@@ -180,19 +183,24 @@ func (sm *sessMonitor) sendReq() {
 		sm.updateMsgId = msgId
 		sm.Debug("sessMonitor: trying new remote", "msgId", msgId, "remote", sm.smRemote)
 	}
-	spld, err := mgmt.NewPld(msgId, mgmt.NewPollReq(sm.sess.SessId))
+	spld, err := mgmt.NewPld(msgId, mgmt.NewPollReq(sigcmn.MgmtAddr, sm.sess.SessId))
 	if err != nil {
 		sm.Error("sessMonitor: Error creating SIGCtrl payload", "err", err)
 		return
 	}
-	cpld, err := ctrl.NewPld(spld)
+	cpld, err := ctrl.NewPld(spld, nil)
 	if err != nil {
 		sm.Error("sessMonitor: Error creating Ctrl payload", "err", err)
 		return
 	}
-	raw, err := cpld.PackPld()
+	scpld, err := cpld.SignedPld(ctrl.NullSigner)
 	if err != nil {
-		sm.Error("sessMonitor: Error packing Ctrl payload", "err", err)
+		sm.Error("sessMonitor: Error creating signed Ctrl payload", "err", err)
+		return
+	}
+	raw, err := scpld.PackPld()
+	if err != nil {
+		sm.Error("sessMonitor: Error packing signed Ctrl payload", "err", err)
 		return
 	}
 	raddr := sm.smRemote.Sig.CtrlSnetAddr()
@@ -207,7 +215,7 @@ func (sm *sessMonitor) sendReq() {
 	// goroutines write to it.
 	_, err = sm.sess.conn.WriteToSCION(raw, raddr)
 	if err != nil {
-		sm.Error("sessMonitor: Error sending Ctrl payload", "err", err)
+		sm.Error("sessMonitor: Error sending signed Ctrl payload", "err", err)
 	}
 }
 

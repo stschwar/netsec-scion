@@ -23,11 +23,7 @@ jobs:
                 when: always
             - run:
                 name: Unit tests & Coverage
-                command: ./scion.sh coverage |& tee logs/coverage.run
-                when: always
-            - run:
-                name: scion-web
-                command: ./sub/web/manage.py test &> logs/sweb_test.run
+                command: '{ ./scion.sh coverage py; make -sC go test; } |& tee logs/coverage.run'
                 when: always
             - run:
                 name: Python documentation (sphinx)
@@ -47,7 +43,7 @@ jobs:
 
     build:
         docker:
-            - image: ethznetsec/scion_base@sha256:10847e43692e21f67e08e1f0bbb1fe4361f276ae97986b48899ff7e1ed357235
+            - image: scionproto/scion_base@sha256:04b4f8f533a3e8fabc5a4628bb68c64f4e0d490fdf4d0d4460d4bdb37cb04c77
         <<: *job
         steps:
             - checkout
@@ -68,11 +64,7 @@ jobs:
                 when: always
             - run:
                 name: Unit tests & Coverage
-                command: ./scion.sh coverage |& tee logs/coverage.run
-                when: always
-            - run:
-                name: scion-web
-                command: ./sub/web/manage.py test &> logs/sweb_test.run
+                command: '{ ./scion.sh coverage py; make -sC go test; } |& tee logs/coverage.run'
                 when: always
             - run:
                 name: Python documentation (sphinx)
@@ -92,7 +84,7 @@ jobs:
 
 scion_defaults:
     job: &job
-        working_directory: /home/scion/go/src/github.com/netsec-ethz/scion
+        working_directory: /home/scion/go/src/github.com/scionproto/scion
         environment:
             - BASH_ENV: /home/scion/.profile
 
@@ -105,7 +97,7 @@ scion_defaults:
         name: Gather test artifacts
         command: |
             set +e -x
-            mv -n python/htmlcov logs go/gocover.html gen sphinx-doc/_build/html/ "/tmp/artifacts/$ARTIFACTS"
+            mv -n python/htmlcov logs gen sphinx-doc/_build/html/ "/tmp/artifacts/$ARTIFACTS"
             cp -a /tmp/test_flags "/tmp/artifacts/$ARTIFACTS"
             tar caf "/tmp/artifacts.out/$ARTIFACTS.tar.gz" -C /tmp/artifacts "$ARTIFACTS" || exit 1
         when: always

@@ -31,7 +31,7 @@ from prometheus_client import Counter, Gauge, start_http_server
 # SCION
 import lib.app.sciond as lib_sciond
 from lib.config import Config
-from lib.crypto.certificate_chain import verify_sig_chain_trc
+from lib.crypto.certificate_chain import verify_chain_trc
 from lib.crypto.hash_tree import ConnectedHashTree
 from lib.errors import SCIONParseError, SCIONVerificationError
 from lib.flagtypes import TCPFlags
@@ -70,7 +70,7 @@ from lib.packet.cert_mgmt import (
     TRCReply,
     TRCRequest,
 )
-from lib.packet.ctrl_pld import CtrlPayload
+from lib.packet.ctrl_pld import CtrlPayload, mk_ctrl_req_id
 from lib.packet.ext.one_hop_path import OneHopPathExt
 from lib.packet.host_addr import HostAddrNone
 from lib.packet.packet_base import PayloadRaw
@@ -81,7 +81,7 @@ from lib.packet.scion import (
     build_base_hdrs,
 )
 from lib.packet.svc import SVC_TO_SERVICE, SERVICE_TO_SVC_A
-from lib.packet.scion_addr import ISD_AS, SCIONAddr
+from lib.packet.scion_addr import SCIONAddr
 from lib.packet.scion_udp import SCIONUDPHeader
 from lib.packet.scmp.errors import (
     SCMPBadDstType,
@@ -99,7 +99,6 @@ from lib.packet.scmp.errors import (
 )
 from lib.packet.scmp.types import SCMPClass
 from lib.packet.scmp.util import scmp_type_name
-from lib.packet.pcb import PathSegment
 from lib.socket import ReliableSocket, SocketMgr, TCPSocketWrapper
 from lib.tcp.socket import SCIONTCPSocket, SockOpt
 from lib.thread import thread_safety_net, kill_self
@@ -332,11 +331,12 @@ class SCIONElement(object):
             now = time.time()
             for (isd, ver), (req_time, meta) in self.requested_trcs.items():
                 if now - req_time >= self.TRC_CC_REQ_TIMEOUT:
-                    trc_req = TRCRequest.from_values(ISD_AS.from_values(isd, 0), ver,
-                                                     cache_only=True)
+                    trc_req = TRCRequest.from_values(isd, ver, cache_only=True)
                     meta = meta or self._get_cs()
-                    logging.info("Re-Requesting TRC from %s: %s", meta, trc_req.short_desc())
-                    self.send_meta(CtrlPayload(CertMgmt(trc_req)), meta)
+                    req_id = mk_ctrl_req_id()
+                    logging.info("Re-Requesting TRC from %s: %s [id: %016x]",
+                                 meta, trc_req.short_desc(), req_id)
+                    self.send_meta(CtrlPayload(CertMgmt(trc_req), req_id=req_id), meta)
                     self.requested_trcs[(isd, ver)] = (time.time(), meta)
                     if self._labels:
                         PENDING_TRC_REQS_TOTAL.labels(**self._labels).set(len(self.requested_trcs))
@@ -351,21 +351,25 @@ class SCIONElement(object):
                 if now - req_time >= self.TRC_CC_REQ_TIMEOUT:
                     cert_req = CertChainRequest.from_values(isd_as, ver, cache_only=True)
                     meta = meta or self._get_cs()
-                    logging.info("Re-Requesting CERTCHAIN from %s: %s", meta, cert_req.short_desc())
-                    self.send_meta(CtrlPayload(CertMgmt(cert_req)), meta)
+                    req_id = mk_ctrl_req_id()
+                    logging.info("Re-Requesting CERTCHAIN from %s: %s [id: %016x]",
+                                 meta, cert_req.short_desc(), req_id)
+                    self.send_meta(CtrlPayload(CertMgmt(cert_req), req_id=req_id), meta)
                     self.requested_certs[(isd_as, ver)] = (time.time(), meta)
                     if self._labels:
                         PENDING_CERT_REQS_TOTAL.labels(**self._labels).set(
                             len(self.requested_certs))
 
-    def _process_path_seg(self, seg_meta):
+    def _process_path_seg(self, seg_meta, req_id=None):
         """
         When a pcb or path segment is received, this function is called to
         find missing TRCs and certs and request them.
         :param seg_meta: PathSegMeta object that contains pcb/path segment
         """
         meta_str = str(seg_meta.meta) if seg_meta.meta else "ZK"
-        logging.debug("Handling PCB from %s: %s" % (meta_str, seg_meta.seg.short_desc()))
+        req_str = "[id: %016x]" % req_id if req_id else ""
+        logging.debug("Handling PCB from %s: %s %s",
+                      meta_str, seg_meta.seg.short_desc(), req_str)
         with self.unv_segs_lock:
             # Close the meta of the previous seg_meta, if there was one.
             prev_meta = self.unverified_segs.get(seg_meta.id)
@@ -446,19 +450,20 @@ class SCIONElement(object):
                     # There is already an outstanding request for the missing TRC
                     # to the local CS and we don't have a new meta.
                     continue
-            trc_req = TRCRequest.from_values(ISD_AS.from_values(isd, 0), ver, cache_only=True)
+            trc_req = TRCRequest.from_values(isd, ver, cache_only=True)
             meta = seg_meta.meta or self._get_cs()
             if not meta:
                 logging.error("Couldn't find a CS to request TRC for PCB %s",
                               seg_meta.seg.short_id())
                 continue
-            logging.info("Requesting %sv%s TRC from %s, for PCB %s",
-                         isd, ver, meta, seg_meta.seg.short_id())
+            req_id = mk_ctrl_req_id()
+            logging.info("Requesting %sv%s TRC from %s, for PCB %s [id: %016x]",
+                         isd, ver, meta, seg_meta.seg.short_id(), req_id)
             with self.req_trcs_lock:
                 self.requested_trcs[(isd, ver)] = (time.time(), seg_meta.meta)
                 if self._labels:
                     PENDING_TRC_REQS_TOTAL.labels(**self._labels).set(len(self.requested_trcs))
-            self.send_meta(CtrlPayload(CertMgmt(trc_req)), meta)
+            self.send_meta(CtrlPayload(CertMgmt(trc_req), req_id=req_id), meta)
 
     def _request_missing_certs(self, seg_meta):
         """
@@ -492,13 +497,14 @@ class SCIONElement(object):
                 logging.error("Couldn't find a CS to request CERTCHAIN for PCB %s",
                               seg_meta.seg.short_id())
                 continue
-            logging.info("Requesting %sv%s CERTCHAIN from %s for PCB %s",
-                         isd_as, ver, meta, seg_meta.seg.short_id())
+            req_id = mk_ctrl_req_id()
+            logging.info("Requesting %sv%s CERTCHAIN from %s for PCB %s [id: %016x]",
+                         isd_as, ver, meta, seg_meta.seg.short_id(), req_id)
             with self.req_certs_lock:
                 self.requested_certs[(isd_as, ver)] = (time.time(), seg_meta.meta)
                 if self._labels:
                     PENDING_CERT_REQS_TOTAL.labels(**self._labels).set(len(self.requested_certs))
-            self.send_meta(CtrlPayload(CertMgmt(cert_req)), meta)
+            self.send_meta(CtrlPayload(CertMgmt(cert_req), req_id=req_id), meta)
 
     def _missing_trc_versions(self, trc_versions):
         """
@@ -551,7 +557,8 @@ class SCIONElement(object):
         rep = cmgt.union
         assert isinstance(rep, TRCReply), type(rep)
         isd, ver = rep.trc.get_isd_ver()
-        logging.info("TRC reply received for %sv%s from %s" % (isd, ver, meta))
+        logging.info("TRC reply received for %sv%s from %s [id: %s]",
+                     isd, ver, meta, cpld.req_id_str())
         self.trust_store.add_trc(rep.trc, True)
         # Update core ases for isd this trc belongs to
         max_local_ver = self.trust_store.get_trc(rep.trc.isd)
@@ -589,12 +596,16 @@ class SCIONElement(object):
         req = cmgt.union
         assert isinstance(req, TRCRequest), type(req)
         isd, ver = req.isd_as()[0], req.p.version
-        logging.info("TRC request received for %sv%s from %s" % (isd, ver, meta))
+        logging.info("TRC request received for %sv%s from %s [id: %s]" %
+                     (isd, ver, meta, cpld.req_id_str()))
         trc = self.trust_store.get_trc(isd, ver)
         if trc:
-            self.send_meta(CtrlPayload(CertMgmt(TRCReply.from_values(trc))), meta)
+            self.send_meta(
+                CtrlPayload(CertMgmt(TRCReply.from_values(trc)), req_id=cpld.req_id),
+                meta)
         else:
-            logging.warning("Could not find requested TRC %sv%s" % (isd, ver))
+            logging.warning("Could not find requested TRC %sv%s [id: %s]" %
+                            (isd, ver, cpld.req_id_str()))
 
     def process_cert_chain_reply(self, cpld, meta):
         """Process a certificate chain reply."""
@@ -603,7 +614,8 @@ class SCIONElement(object):
         assert isinstance(rep, CertChainReply), type(rep)
         meta.close()
         isd_as, ver = rep.chain.get_leaf_isd_as_ver()
-        logging.info("Cert chain reply received for %sv%s from %s" % (isd_as, ver, meta))
+        logging.info("Cert chain reply received for %sv%s from %s [id: %s]",
+                     isd_as, ver, meta, cpld.req_id_str())
         self.trust_store.add_cert(rep.chain, True)
         with self.req_certs_lock:
             self.requested_certs.pop((isd_as, ver), None)
@@ -637,13 +649,16 @@ class SCIONElement(object):
         req = cmgt.union
         assert isinstance(req, CertChainRequest), type(req)
         isd_as, ver = req.isd_as(), req.p.version
-        logging.info("Cert chain request received for %sv%s from %s" % (isd_as, ver, meta))
+        logging.info("Cert chain request received for %sv%s from %s [id: %s]" %
+                     (isd_as, ver, meta, cpld.req_id_str()))
         cert = self.trust_store.get_cert(isd_as, ver)
         if cert:
-            self.send_meta(CtrlPayload(CertMgmt(CertChainReply.from_values(cert))), meta)
+            self.send_meta(
+                CtrlPayload(CertMgmt(CertChainReply.from_values(cert)), req_id=cpld.req_id),
+                meta)
         else:
-            logging.warning("Could not find requested certificate %sv%s" %
-                            (isd_as, ver))
+            logging.warning("Could not find requested certificate %sv%s [id: %s]" %
+                            (isd_as, ver, cpld.req_id_str()))
 
     def _verify_path_seg(self, seg_meta):
         """
@@ -652,13 +667,24 @@ class SCIONElement(object):
         segment are available.
         """
         seg = seg_meta.seg
-        ver_seg = PathSegment.from_values(seg.info)
-        for asm in seg.iter_asms():
+        exp_time = seg.get_expiration_time()
+        for i, asm in enumerate(seg.iter_asms()):
             cert_ia = asm.isd_as()
             trc = self.trust_store.get_trc(cert_ia[0], asm.p.trcVer)
             chain = self.trust_store.get_cert(asm.isd_as(), asm.p.certVer)
-            ver_seg.add_asm(asm)
-            verify_sig_chain_trc(ver_seg.sig_pack3(), asm.p.sig, cert_ia, chain, trc)
+            self._verify_exp_time(exp_time, chain)
+            verify_chain_trc(cert_ia, chain, trc)
+            seg.verify(chain.as_cert.subject_sig_key_raw, i)
+
+    def _verify_exp_time(self, exp_time, chain):
+        """
+        Verify that certificate chain cover the expiration time.
+        :raises SCIONVerificationError
+        """
+        # chain is only verifiable if TRC.exp_time >= CoreCert.exp_time >= LeafCert.exp_time
+        if chain.as_cert.expiration_time < exp_time:
+            raise SCIONVerificationError(
+                "Certificate chain %sv%s expires before path segment" % chain.get_leaf_isd_as_ver())
 
     def _get_ctrl_handler(self, msg):
         pclass = msg.type()

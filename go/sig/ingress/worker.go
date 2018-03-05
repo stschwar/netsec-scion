@@ -20,12 +20,12 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/netsec-ethz/scion/go/lib/common"
-	liblog "github.com/netsec-ethz/scion/go/lib/log"
-	"github.com/netsec-ethz/scion/go/lib/ringbuf"
-	"github.com/netsec-ethz/scion/go/lib/snet"
-	"github.com/netsec-ethz/scion/go/sig/metrics"
-	"github.com/netsec-ethz/scion/go/sig/sigcmn"
+	"github.com/scionproto/scion/go/lib/common"
+	liblog "github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/ringbuf"
+	"github.com/scionproto/scion/go/lib/snet"
+	"github.com/scionproto/scion/go/sig/metrics"
+	"github.com/scionproto/scion/go/sig/mgmt"
 )
 
 const (
@@ -35,17 +35,22 @@ const (
 	rlistCleanUpInterval = 1 * time.Second
 )
 
-// Worker handles decapsulation of SIG frames.
-type Worker struct {
-	Remote           *snet.Addr
-	SessId           sigcmn.SessionType
-	Ring             *ringbuf.Ring
-	reassemblyLists  map[int]*ReassemblyList
-	running          bool
-	markedForCleanup bool
+type sender interface {
+	send(common.RawBytes) error
 }
 
-func NewWorker(remote *snet.Addr, sessId sigcmn.SessionType) *Worker {
+// Worker handles decapsulation of SIG frames.
+type Worker struct {
+	log.Logger
+	Remote           *snet.Addr
+	SessId           mgmt.SessionType
+	Ring             *ringbuf.Ring
+	rlists           map[int]*ReassemblyList
+	markedForCleanup bool
+	sentCtrs         metrics.CtrPair
+}
+
+func NewWorker(remote *snet.Addr, sessId mgmt.SessionType) *Worker {
 	// FIXME(kormat): these labels don't allow us to identify traffic from a
 	// specific remote sig, but adding the remote sig addr would cause a label
 	// explosion :/
@@ -53,31 +58,29 @@ func NewWorker(remote *snet.Addr, sessId sigcmn.SessionType) *Worker {
 		"ringId": remote.IA.String(), "sessId": sessId.String(),
 	}
 	worker := &Worker{
-		Remote:          remote,
-		SessId:          sessId,
-		Ring:            ringbuf.New(64, nil, "ingress", ringLabels),
-		reassemblyLists: make(map[int]*ReassemblyList),
+		Logger: log.New("ingress", remote.String(), "sessId", sessId),
+		Remote: remote,
+		SessId: sessId,
+		Ring:   ringbuf.New(64, nil, "ingress", ringLabels),
+		rlists: make(map[int]*ReassemblyList),
+		sentCtrs: metrics.CtrPair{
+			Pkts: metrics.PktsSent.WithLabelValues(remote.IA.String(),
+				sessId.String()),
+			Bytes: metrics.PktBytesSent.WithLabelValues(remote.IA.String(),
+				sessId.String()),
+		},
 	}
 	return worker
 }
 
-func (w *Worker) Start() {
-	if !w.running {
-		go w.run()
-		w.running = true
-	}
-}
-
 func (w *Worker) Stop() {
-	if w.running {
-		log.Info("IngressWorker stopping", "remote", w.Remote.String(), "sessId", w.SessId)
-		w.Ring.Close()
-		w.running = false
-	}
+	defer liblog.LogPanicAndExit()
+	w.Ring.Close()
 }
 
-func (w *Worker) run() {
+func (w *Worker) Run() {
 	defer liblog.LogPanicAndExit()
+	w.Info("IngressWorker starting")
 	frames := make(ringbuf.EntryList, 64)
 	lastCleanup := time.Now()
 	for {
@@ -86,7 +89,7 @@ func (w *Worker) run() {
 		// to do any cleanup.
 		n, _ := w.Ring.Read(frames, true)
 		if n < 0 {
-			return
+			break
 		}
 		for i := 0; i < n; i++ {
 			frame := frames[i].(*FrameBuf)
@@ -98,6 +101,7 @@ func (w *Worker) run() {
 			lastCleanup = time.Now()
 		}
 	}
+	w.Info("IngressWorker stopping")
 }
 
 // processFrame processes a SIG frame by first writing all completely contained
@@ -105,11 +109,12 @@ func (w *Worker) run() {
 // list if needed.
 func (w *Worker) processFrame(frame *FrameBuf) {
 	epoch := int(common.Order.Uint16(frame.raw[1:3]))
-	seqNr := int(common.Order.Uint32(frame.raw[2:6]) & 0x00FFFFFF)
+	seqNr := int(common.Order.UintN(frame.raw[3:6], 3))
 	index := int(common.Order.Uint16(frame.raw[6:8]))
 	frame.seqNr = seqNr
 	frame.index = index
-	//log.Debug("Received Frame", "seqNr", seqNr, "index", index, "epoch", epoch,
+	frame.snd = w
+	//w.Debug("Received Frame", "seqNr", seqNr, "index", index, "epoch", epoch,
 	//	"len", frame.frameLen)
 	// If index == 1 then we can be sure that there is no fragment at the beginning
 	// of the frame.
@@ -118,27 +123,27 @@ func (w *Worker) processFrame(frame *FrameBuf) {
 	// frame.
 	frame.completePktsProcessed = index == 0
 	// Add to frame buf reassembly list.
-	rlist := w.getReassemblyList(epoch)
+	rlist := w.getRlist(epoch)
 	rlist.Insert(frame)
 }
 
-func (w *Worker) getReassemblyList(epoch int) *ReassemblyList {
-	rlist, ok := w.reassemblyLists[epoch]
+func (w *Worker) getRlist(epoch int) *ReassemblyList {
+	rlist, ok := w.rlists[epoch]
 	if !ok {
-		rlist = NewReassemblyList(epoch, reassemblyListCap)
-		w.reassemblyLists[epoch] = rlist
+		rlist = NewReassemblyList(epoch, reassemblyListCap, w)
+		w.rlists[epoch] = rlist
 	}
 	rlist.markedForDeletion = false
 	return rlist
 }
 
 func (w *Worker) cleanup() {
-	for epoch, rlist := range w.reassemblyLists {
+	for epoch, rlist := range w.rlists {
 		if rlist.markedForDeletion {
 			// Reassembly list has been marked for deletion in a previous cleanup run.
 			// Remove the reassembly list from the map and then release all frames
 			// back to the bufpool.
-			delete(w.reassemblyLists, epoch)
+			delete(w.rlists, epoch)
 			go rlist.removeAll()
 		} else {
 			// Mark the reassembly list for deletion. If it is not accessed between now
@@ -148,13 +153,13 @@ func (w *Worker) cleanup() {
 	}
 }
 
-func send(packet common.RawBytes) error {
+func (w *Worker) send(packet common.RawBytes) error {
 	bytesWritten, err := tunIO.Write(packet)
 	if err != nil {
-		return common.NewCError("Unable to write to internal ingress", "err", err,
+		return common.NewBasicError("Unable to write to internal ingress", err,
 			"length", len(packet))
 	}
-	metrics.PktsSent.WithLabelValues(tunDevName).Inc()
-	metrics.PktBytesSent.WithLabelValues(tunDevName).Add(float64(bytesWritten))
+	w.sentCtrs.Pkts.Inc()
+	w.sentCtrs.Bytes.Add(float64(bytesWritten))
 	return nil
 }

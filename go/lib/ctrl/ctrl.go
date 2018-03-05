@@ -22,97 +22,82 @@ import (
 
 	//log "github.com/inconshreveable/log15"
 
-	"github.com/netsec-ethz/scion/go/lib/common"
-	"github.com/netsec-ethz/scion/go/lib/ctrl/ifid"
-	"github.com/netsec-ethz/scion/go/lib/ctrl/path_mgmt"
-	"github.com/netsec-ethz/scion/go/lib/ctrl/seg"
-	"github.com/netsec-ethz/scion/go/proto"
-	sigmgmt "github.com/netsec-ethz/scion/go/sig/mgmt"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/ctrl/cert_mgmt"
+	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
+	"github.com/scionproto/scion/go/proto"
 )
 
-const LenSize = 4
-
-// union represents the contents of the unnamed capnp union.
-type union struct {
-	Which       proto.CtrlPld_Which
-	PathSegment *seg.PathSegment `capnp:"pcb"`
-	IfID        *ifid.IFID       `capnp:"ifid"`
-	CertMgmt    []byte           `capnp:"-"` // Omit for now
-	PathMgmt    *path_mgmt.Pld
-	Sibra       []byte `capnp:"-"` // Omit for now
-	DRKeyMgmt   []byte `capnp:"-"` // Omit for now
-	Sig         *sigmgmt.Pld
-}
-
-func (u *union) set(c proto.Cerealizable) error {
-	switch p := c.(type) {
-	case *seg.PathSegment:
-		u.Which = proto.CtrlPld_Which_pcb
-		u.PathSegment = p
-	case *ifid.IFID:
-		u.Which = proto.CtrlPld_Which_ifid
-		u.IfID = p
-	case *path_mgmt.Pld:
-		u.Which = proto.CtrlPld_Which_pathMgmt
-		u.PathMgmt = p
-	case *sigmgmt.Pld:
-		u.Which = proto.CtrlPld_Which_sig
-		u.Sig = p
-	default:
-		return common.NewCError("Unsupported ctrl union type (set)", "type", common.TypeOf(c))
-	}
-	return nil
-}
-
-func (u *union) get() (proto.Cerealizable, error) {
-	switch u.Which {
-	case proto.CtrlPld_Which_pcb:
-		return u.PathSegment, nil
-	case proto.CtrlPld_Which_ifid:
-		return u.IfID, nil
-	case proto.CtrlPld_Which_pathMgmt:
-		return u.PathMgmt, nil
-	case proto.CtrlPld_Which_sig:
-		return u.Sig, nil
-	}
-	return nil, common.NewCError("Unsupported ctrl union type (get)", "type", u.Which)
-}
-
-var _ common.Payload = (*Pld)(nil)
 var _ proto.Cerealizable = (*Pld)(nil)
 
 type Pld struct {
 	union
+	*Data
 }
 
 // NewPld creates a new control payload, containing the supplied Cerealizable instance.
-func NewPld(u proto.Cerealizable) (*Pld, error) {
-	p := &Pld{}
+func NewPld(u proto.Cerealizable, d *Data) (*Pld, error) {
+	p := &Pld{Data: d}
 	return p, p.union.set(u)
 }
 
 // NewPathMgmtPld creates a new control payload, containing a new path_mgmt payload,
 // which in turn contains the supplied Cerealizable instance.
-func NewPathMgmtPld(u proto.Cerealizable) (*Pld, error) {
-	ppld, err := path_mgmt.NewPld(u)
+func NewPathMgmtPld(u proto.Cerealizable, pathD *path_mgmt.Data, ctrlD *Data) (*Pld, error) {
+	ppld, err := path_mgmt.NewPld(u, pathD)
 	if err != nil {
 		return nil, err
 	}
-	return NewPld(ppld)
+	return NewPld(ppld, ctrlD)
+}
+
+// NewCertMgmtPld creates a new control payload, containing a new cert_mgmt payload,
+// which in turn contains the supplied Cerealizable instance.
+func NewCertMgmtPld(u proto.Cerealizable, certD *cert_mgmt.Data, ctrlD *Data) (*Pld, error) {
+	cpld, err := cert_mgmt.NewPld(u, certD)
+	if err != nil {
+		return nil, err
+	}
+	return NewPld(cpld, ctrlD)
 }
 
 func NewPldFromRaw(b common.RawBytes) (*Pld, error) {
-	p := &Pld{}
-	n := common.Order.Uint32(b)
-	if int(n)+4 != len(b) {
-		return nil, common.NewCError("Invalid ctrl payload length",
-			"expected", n+4, "actual", len(b))
-	}
-	return p, proto.ParseFromRaw(p, proto.CtrlPld_TypeID, b[4:])
+	p := &Pld{Data: &Data{}}
+	return p, proto.ParseFromRaw(p, proto.CtrlPld_TypeID, b)
 }
 
 func (p *Pld) Union() (proto.Cerealizable, error) {
 	return p.union.get()
+}
+
+// GetCertMgmt returns the CertMgmt payload and the CtrlPld's non-union Data.
+// If the union type is not CertMgmt, an error is returned.
+func (p *Pld) GetCertMgmt() (*cert_mgmt.Pld, *Data, error) {
+	u, err := p.Union()
+	if err != nil {
+		return nil, nil, err
+	}
+	certP, ok := u.(*cert_mgmt.Pld)
+	if !ok {
+		return nil, nil, common.NewBasicError("Non-matching ctrl pld contents", nil,
+			"expected", "*cert_mgmt.Pld", "actual", common.TypeOf(u))
+	}
+	return certP, p.Data, nil
+}
+
+// GetCertMgmt returns the PathMgmt payload and the CtrlPld's non-union Data.
+// If the union type is not PathMgmt, an error is returned.
+func (p *Pld) GetPathMgmt() (*path_mgmt.Pld, *Data, error) {
+	u, err := p.Union()
+	if err != nil {
+		return nil, nil, err
+	}
+	pathP, ok := u.(*path_mgmt.Pld)
+	if !ok {
+		return nil, nil, common.NewBasicError("Non-matching ctrl pld contents", nil,
+			"expected", "*path_mgmt.Pld", "actual", common.TypeOf(u))
+	}
+	return pathP, p.Data, nil
 }
 
 func (p *Pld) Len() int {
@@ -127,24 +112,28 @@ func (p *Pld) Copy() (common.Payload, error) {
 	return NewPldFromRaw(raw)
 }
 
+func (p *Pld) Write(b common.RawBytes) (int, error) {
+	return proto.WriteRoot(p, b)
+}
+
+func (p *Pld) SignedPld(signer Signer) (*SignedPld, error) {
+	return signer.Sign(p)
+}
+
 func (p *Pld) WritePld(b common.RawBytes) (int, error) {
-	n, err := proto.WriteRoot(p, b[4:])
-	common.Order.PutUint32(b, uint32(n))
-	return n + 4, err
+	sp, err := newSignedPld(p, nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	return sp.WritePld(b)
 }
 
 func (p *Pld) PackPld() (common.RawBytes, error) {
-	b, err := proto.PackRoot(p)
+	sp, err := newSignedPld(p, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	// Make a larger buffer, to allow pre-pending of the length field.
-	full := make(common.RawBytes, LenSize+len(b))
-	// Write length field
-	common.Order.PutUint32(full, uint32(len(b)))
-	// Copy the encoded proto into the full buffer
-	copy(full[LenSize:], b)
-	return full, err
+	return sp.PackPld()
 }
 
 func (p *Pld) ProtoId() proto.ProtoIdType {
@@ -160,4 +149,10 @@ func (p *Pld) String() string {
 		desc = append(desc, fmt.Sprintf("%+v", u))
 	}
 	return strings.Join(desc, " ")
+}
+
+// Data holds all non-union entries from CtrlPld
+type Data struct {
+	ReqId   uint64
+	TraceId common.RawBytes
 }

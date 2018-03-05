@@ -22,13 +22,13 @@ import capnp  # noqa
 import proto.path_mgmt_capnp as P
 from lib.defines import PATH_FLAG_CACHEONLY, PATH_FLAG_SIBRA
 from lib.packet.packet_base import Cerealizable
+from lib.packet.path_mgmt.seg_recs import PathSegmentRecords
 from lib.packet.scion_addr import ISD_AS
 
 
 class PathSegmentReq(Cerealizable):  # pragma: no cover
     """Describes a request for path segment(s)"""
     NAME = "PathSegmentReq"
-    LEN = 1 + 2 * ISD_AS.LEN
     P_CLS = P.SegReq
 
     @classmethod
@@ -56,5 +56,29 @@ class PathSegmentReq(Cerealizable):  # pragma: no cover
             flags.add(PATH_FLAG_CACHEONLY)
         return tuple(flags)
 
+    def __eq__(self, other):
+        return (self.p.srcIA == other.p.srcIA and
+                self.p.dstIA == other.p.dstIA and
+                self.flags() == other.flags())
+
     def short_desc(self):
-        return "%s -> %s %s" % (self.src_ia(), self.dst_ia(), self.flags())
+        return "%s -> %s  %s" % (self.src_ia(), self.dst_ia(), self.flags())
+
+
+class PathSegmentReply(Cerealizable):  # pragma: no cover
+    NAME = "PathSegmentReply"
+    P_CLS = P.SegReply
+
+    @classmethod
+    def from_values(cls, req, recs):
+        p = cls.P_CLS.new_message(req=req.p, recs=recs.p)
+        return cls(p)
+
+    def req(self):
+        return PathSegmentReq(self.p.req)
+
+    def recs(self):
+        return PathSegmentRecords(self.p.recs)
+
+    def short_desc(self):
+        return "Req: %s\n%s" % (self.req(), self.recs())

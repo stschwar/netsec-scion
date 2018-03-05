@@ -20,21 +20,30 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"os/user"
 	"syscall"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/syndtr/gocapability/capability"
 
-	"github.com/netsec-ethz/scion/go/lib/addr"
-	"github.com/netsec-ethz/scion/go/lib/common"
-	liblog "github.com/netsec-ethz/scion/go/lib/log"
-	"github.com/netsec-ethz/scion/go/sig/base"
-	"github.com/netsec-ethz/scion/go/sig/config"
-	"github.com/netsec-ethz/scion/go/sig/disp"
-	"github.com/netsec-ethz/scion/go/sig/egress"
-	"github.com/netsec-ethz/scion/go/sig/ingress"
-	"github.com/netsec-ethz/scion/go/sig/metrics"
-	"github.com/netsec-ethz/scion/go/sig/sigcmn"
+	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/common"
+	liblog "github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/sig/base"
+	"github.com/scionproto/scion/go/sig/config"
+	"github.com/scionproto/scion/go/sig/disp"
+	"github.com/scionproto/scion/go/sig/egress"
+	"github.com/scionproto/scion/go/sig/ingress"
+	"github.com/scionproto/scion/go/sig/metrics"
+	"github.com/scionproto/scion/go/sig/sigcmn"
 )
+
+var sighup chan os.Signal
+
+func init() {
+	sighup = make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+}
 
 var (
 	id      = flag.String("id", "", "Element ID (Required. E.g. 'sig4-21-9')")
@@ -53,6 +62,9 @@ func main() {
 	liblog.Setup(*id)
 	defer liblog.LogPanicAndExit()
 	setupSignals()
+	if err := checkPerms(); err != nil {
+		fatal("Permissions checks failed", "err", err)
+	}
 
 	// Export prometheus metrics.
 	metrics.Init(*id)
@@ -74,10 +86,12 @@ func main() {
 	egress.Init()
 	disp.Init(sigcmn.CtrlConn)
 	go base.PollReqHdlr()
+
 	// Parse config
 	if loadConfig(*cfgPath) != true {
 		fatal("Unable to load config on startup")
 	}
+	go reloadOnSIGHUP(*cfgPath)
 
 	// Spawn ingress Dispatcher.
 	if err := ingress.Init(); err != nil {
@@ -97,50 +111,43 @@ func setupSignals() {
 	}()
 }
 
+func checkPerms() error {
+	user, err := user.Current()
+	if err != nil {
+		return common.NewBasicError("Error retrieving user", err)
+	}
+	if user.Uid == "0" {
+		return common.NewBasicError("Running as root is not allowed for security reasons", nil)
+	}
+	caps, err := capability.NewPid(0)
+	if err != nil {
+		return common.NewBasicError("Error retrieving capabilities", err)
+	}
+	if !caps.Get(capability.EFFECTIVE, capability.CAP_NET_ADMIN) {
+		return common.NewBasicError("CAP_NET_ADMIN is required", nil, "caps", caps)
+	}
+	return nil
+}
+
+func reloadOnSIGHUP(path string) {
+	defer liblog.LogPanicAndExit()
+	log.Info("reloadOnSIGHUP: started")
+	for range sighup {
+		log.Info("reloadOnSIGHUP: reloading...")
+		success := loadConfig(path)
+		// Errors already logged in loadConfig
+		log.Info("reloadOnSIGHUP: reload done", "success", success)
+	}
+	log.Info("reloadOnSIGHUP: stopped")
+}
+
 func loadConfig(path string) bool {
 	cfg, err := config.LoadFromFile(path)
 	if err != nil {
-		cerr := err.(*common.CError)
-		log.Error(cerr.Desc, cerr.Ctx...)
+		log.Error("loadConfig: Failed", "err", err)
 		return false
 	}
-	success := true
-	for iaVal, cfgEntry := range cfg.ASes {
-		ia := &iaVal
-		ae, err := base.Map.AddIA(ia)
-		if err != nil {
-			cerr := err.(*common.CError)
-			log.Error(cerr.Desc, cerr.Ctx...)
-			success = false
-			continue
-		}
-		// Add sigs before networks, so there's somewhere for packets to go.
-		for id, sig := range cfgEntry.Sigs {
-			ctrlPort := int(sig.CtrlPort)
-			if ctrlPort == 0 {
-				ctrlPort = sigcmn.DefaultCtrlPort
-			}
-			encapPort := int(sig.EncapPort)
-			if encapPort == 0 {
-				encapPort = sigcmn.DefaultEncapPort
-			}
-			if err := ae.AddSig(id, sig.Addr, ctrlPort, encapPort, true); err != nil {
-				cerr := err.(*common.CError)
-				log.Error(cerr.Desc, cerr.Ctx...)
-				success = false
-				continue
-			}
-		}
-		for _, netw := range cfgEntry.Nets {
-			if err := ae.AddNet(netw.IPNet()); err != nil {
-				cerr := err.(*common.CError)
-				log.Error(cerr.Desc, cerr.Ctx...)
-				success = false
-				continue
-			}
-		}
-	}
-	return success
+	return base.Map.ReloadConfig(cfg)
 }
 
 func fatal(msg string, args ...interface{}) {

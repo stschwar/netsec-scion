@@ -15,23 +15,22 @@
 package egress
 
 import (
-	"bytes"
-	"encoding/binary"
 	"time"
 
 	log "github.com/inconshreveable/log15"
 
-	"github.com/netsec-ethz/scion/go/lib/common"
-	"github.com/netsec-ethz/scion/go/lib/l4"
-	liblog "github.com/netsec-ethz/scion/go/lib/log"
-	"github.com/netsec-ethz/scion/go/lib/ringbuf"
-	"github.com/netsec-ethz/scion/go/lib/sciond"
-	"github.com/netsec-ethz/scion/go/lib/spath"
-	"github.com/netsec-ethz/scion/go/lib/spkt"
-	"github.com/netsec-ethz/scion/go/lib/util"
-	"github.com/netsec-ethz/scion/go/sig/metrics"
-	"github.com/netsec-ethz/scion/go/sig/sigcmn"
-	"github.com/netsec-ethz/scion/go/sig/siginfo"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/l4"
+	liblog "github.com/scionproto/scion/go/lib/log"
+	"github.com/scionproto/scion/go/lib/ringbuf"
+	"github.com/scionproto/scion/go/lib/sciond"
+	"github.com/scionproto/scion/go/lib/spath"
+	"github.com/scionproto/scion/go/lib/spkt"
+	"github.com/scionproto/scion/go/lib/util"
+	"github.com/scionproto/scion/go/sig/metrics"
+	"github.com/scionproto/scion/go/sig/mgmt"
+	"github.com/scionproto/scion/go/sig/sigcmn"
+	"github.com/scionproto/scion/go/sig/siginfo"
 )
 
 //   SIG Frame Header, used to encapsulate SIG to SIG traffic. The sequence
@@ -53,6 +52,7 @@ const (
 	PktLenSize = 2
 	MinSpace   = 16
 	SigHdrLen  = 8
+	MaxSeq     = (1 << 24) - 1
 )
 
 type worker struct {
@@ -61,6 +61,7 @@ type worker struct {
 	sess          *Session
 	currSig       *siginfo.Sig
 	currPathEntry *sciond.PathReplyEntry
+	frameSentCtrs metrics.CtrPair
 
 	epoch uint16
 	seq   uint32
@@ -72,7 +73,11 @@ func NewWorker(sess *Session, logger log.Logger) *worker {
 		Logger:   logger,
 		iaString: sess.IA.String(),
 		sess:     sess,
-		pkts:     make(ringbuf.EntryList, 0, egressBufPkts),
+		frameSentCtrs: metrics.CtrPair{
+			Pkts:  metrics.FramesSent.WithLabelValues(sess.IA.String(), sess.SessId.String()),
+			Bytes: metrics.FrameBytesSent.WithLabelValues(sess.IA.String(), sess.SessId.String()),
+		},
+		pkts: make(ringbuf.EntryList, 0, egressBufPkts),
 	}
 }
 
@@ -164,7 +169,7 @@ func (w *worker) write(f *frame) error {
 	snetAddr := w.currSig.EncapSnetAddr()
 	snetAddr.Path = spath.New(w.currPathEntry.Path.FwdPath)
 	if err := snetAddr.Path.InitOffsets(); err != nil {
-		return common.NewCError("Error initializing path offsets", "err", err)
+		return common.NewBasicError("Error initializing path offsets", err)
 	}
 	snetAddr.NextHopHost = w.currPathEntry.HostInfo.Host()
 	snetAddr.NextHopPort = w.currPathEntry.HostInfo.Port
@@ -173,32 +178,39 @@ func (w *worker) write(f *frame) error {
 		w.epoch = uint16(time.Now().Unix() & 0xFFFF)
 	}
 	f.writeHdr(w.sess.SessId, w.epoch, w.seq)
-	// Update metadata
+	// Update sequence number for next packet
 	w.seq += 1
+	if w.seq > MaxSeq {
+		w.seq = 0
+	}
 	bytesWritten, err := w.sess.conn.WriteToSCION(f.raw(), snetAddr)
 	if err != nil {
-		return common.NewCError("Egress write error", "err", err)
+		return common.NewBasicError("Egress write error", err)
 	}
-	metrics.FramesSent.WithLabelValues(w.iaString).Inc()
-	metrics.FrameBytesSent.WithLabelValues(w.iaString).Add(float64(bytesWritten))
+	w.frameSentCtrs.Pkts.Inc()
+	w.frameSentCtrs.Bytes.Add(float64(bytesWritten))
 	return nil
 }
 
 func (w *worker) resetFrame(f *frame) {
 	var mtu uint16 = common.MinMTU
+	var addrLen, pathLen uint16
 	remote := w.sess.Remote()
 	if remote != nil {
 		w.currSig = remote.Sig
+		if w.currSig != nil {
+			addrLen = uint16(spkt.AddrHdrLen(w.currSig.Host, sigcmn.Host))
+		}
 		if remote.sessPath != nil {
 			w.currPathEntry = remote.sessPath.pathEntry
 		}
 		if w.currPathEntry != nil {
 			mtu = w.currPathEntry.Path.Mtu
+			pathLen = uint16(len(w.currPathEntry.Path.FwdPath))
 		}
 	}
-	// FIXME(kormat): to do this properly, need to calculate the address header size,
-	// and account for any ext headers.
-	f.reset(mtu - spkt.CmnHdrLen - 40 - l4.UDPLen)
+	// FIXME(kormat): to do this properly, need to account for any ext headers.
+	f.reset(mtu - spkt.CmnHdrLen - addrLen - pathLen - l4.UDPLen)
 }
 
 type frame struct {
@@ -242,12 +254,9 @@ func (f *frame) startPkt(pktLen uint16) {
 	f.offset += PktLenSize
 }
 
-func (f *frame) writeHdr(sessId sigcmn.SessionType, epoch uint16, seq uint32) {
-	var buf bytes.Buffer
-	binary.Write(&buf, common.Order, seq)
-
+func (f *frame) writeHdr(sessId mgmt.SessionType, epoch uint16, seq uint32) {
 	f.b[0] = uint8(sessId)
 	common.Order.PutUint16(f.b[1:3], epoch)
-	copy(f.b[3:6], buf.Bytes()[1:])
+	common.Order.PutUintN(f.b[3:6], uint64(seq), 3)
 	common.Order.PutUint16(f.b[6:8], f.idx)
 }
