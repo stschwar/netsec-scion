@@ -41,7 +41,7 @@ var (
 	id         = flag.String("id", "", "Element ID (Required. E.g. 'cs1-10-1')")
 	sciondPath = flag.String("sciond", "",
 		"SCIOND socket path (Optional if SCIOND_PATH is set)")
-	dispPath = flag.String("dispatcher", "/run/shm/dispatcher/default.sock",
+	dispPath = flag.String("dispatcher", "/data/data/com.termux/files/run/shm/dispatcher/default.sock",
 		"SCION Dispatcher path")
 	confDir  = flag.String("confd", "", "Configuration directory (Required)")
 	cacheDir = flag.String("cached", "gen-cache", "Caching directory")

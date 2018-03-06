@@ -71,7 +71,7 @@ cmd_test(){
 }
 
 py_test() {
-    nosetests3 ${EXTRA_NOSE_ARGS} "$@"
+    python3 -m nose ${EXTRA_NOSE_ARGS} "$@"
 }
 
 go_test() {
@@ -158,7 +158,7 @@ cmd_sciond() {
     ADDR=${2:-127.${ISD}.${AS}.254}
     GENDIR=gen/ISD${ISD}/AS${AS}/endhost
     [ -d "$GENDIR" ] || { echo "Topology directory for $ISD-$AS doesn't exist: $GENDIR"; exit 1; }
-    APIADDR="/run/shm/sciond/${ISD}-${AS}.sock"
+    APIADDR="/data/data/com.termux/files/run/shm/sciond/${ISD}-${AS}.sock"
     PYTHONPATH=python/:. python/bin/sciond --addr $ADDR --api-addr $APIADDR sd${ISD}-${AS} $GENDIR &
     echo "Sciond running for $ISD-$AS (pid $!)"
     wait
