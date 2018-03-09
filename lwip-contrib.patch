@@ -1,0 +1,18 @@
+diff --git a/ports/unix/proj/scion/Makefile b/ports/unix/proj/scion/Makefile
+index 39694e8..c1469e5 100644
+--- a/ports/unix/proj/scion/Makefile
++++ b/ports/unix/proj/scion/Makefile
+@@ -109,11 +109,9 @@ $(STATIC): $(LWIPOBJS) unixlib.o
+ install: .installstamp
+ 
+ .installstamp: $(TARGETS)
+-	sudo cp $(TARGETS) $(PREFIX)/lib/
+-	sudo ldconfig
++	cp $(TARGETS) $(PREFIX)/lib/
+ 	touch .installstamp
+ 
+ uninstall:
+-	$(foreach var,$(TARGETS),sudo rm -f $(PREFIX)/lib/$(var);)
+-	sudo ldconfig
++	$(foreach var,$(TARGETS),rm -f $(PREFIX)/lib/$(var);)
+ 	rm -f .installstamp

@@ -1,113 +1,97 @@
-SCION
-=====
+SCION for Android
+====
 
-An implementation of [SCION](http://www.scion-architecture.net), a future
-Internet architecture.
+A fork of the [Netsec-SCION](https://github.com/netsec-ethz/netsec-scion) repository. For more information on SCION read the [original README](https://github.com/stschwar/scion/blob/termux-modifications/README-orig.md) or visit https://www.scion-architecture.net.
 
-* [docker/](/docker): support files to run SCION inside of Docker
-  containers.
-* [endhost/](/endhost): the parts of the code used on end hosts, e.g.
-  `sciond`.
-* [go/](/go): parts of the implementation that are written in
-  [Go](http://golang.org).
-* [infrastructure/](/infrastructure): the parts of the infrastructure
-  implemented in Python.
-* [lib/](/lib): the most relevant SCION libraries.
-* [proto/](/proto): the protocol definitions for use with [Cap’n
-  Proto](https://capnproto.org/).
-* [sphinx-doc/](/sphinx-doc): the tools to generate the API
-  documentation for the Python code.
-* [sub/](/sub): the git submodules used by SCION
-* [supervisor/](/supervisor): the configuration for
-  [supervisord](http://supervisord.org/).
-* [test/](/test): the unit tests for the Python code.
-* [tools/](/tools): assorted support tools.
-* [topology/](/topology): the scripts to generate the SCION
-  configuration and topology files, as well as the certificates and ROT files
+This fork specifically focuses on implementation of SCION on Android devices. Since it currently is mainly developed for Linux environments and its code base is based heavily on both [Python](https://www.python.org/) and [Go](https://golang.org/), to make it run on Android devices the [Termux](https://github.com/termux/termux-app) app project is used.
 
-Necessary steps in order to run SCION:
+Termux is an open-sourced Android app that emulates a Terminal off an Arch-Linux environment. For more information on Termux, visit the [Project website](https://termux.com/) or the corresponding [Wiki](https://wiki.termux.com/wiki/Main_Page).
 
-1. Make sure that you are using a clean and recently updated **Ubuntu 16.04**.
+[Download Termux App from Google Play Store](https://play.google.com/store/apps/details?id=com.termux)
+
+## Prerequisites
+Make yourself familiar with Termux and how to interact with it. You preferrably want to setup an SSH connection and work from a computer. Here is [how to setup an SSH connection with Termux](https://glow.li/technology/2015/11/06/run-an-ssh-server-on-your-android-with-termux/).
+
+It is expected that you know how to work with Android devices on a more advanced level. Especially, you ought to know how to push files to a device through ADB.
+
+Install Termux on an Android device and start the App.
+
+#### Install required packages
+
+To install packages run:
+```
+$ pkg install <package-name>
+```
+
+The following packages are required to run SCION:
+
+```
+termux-setup-storage
+termux-exec
+ssh
+git
+python/Python3
+python2
+clang
+make
+python-dev
+libffi-dev
+openssl-dev
+openssl-tools
+```
+#### Installing correct Go version
+
+Another important dependency is the Go runtime. SCION relies on a specific version branch (currently 1.9.x). Termux' package repository is supposedly already ahead on a newer version of Go. If that is the case, the correct version has to be built for Termux.
+
+Termux has a repository for building packages, called [termux-packages](https://github.com/termux/termux-packages).
+
+To build a package follow the instructions on the [termux-packages](https://github.com/termux/termux-packages) page. An older version of Go can be built by modifying the build script in the ```packages/golang/``` folder and setting in the correct version and SHA hash. Same has to be done within the ```build-package.sh``` script.
+
+For convenience, this repo holds a prebuilt version of Go 1.9.4 and its dependencies within ```debian-packages```. This build, however, is specific for ARMv8a/aarch64 devices. If you need the packages for another architecture, you have to build it yourself.
+
+Install all ```.deb``` packages with
+```
+$ dpkg -i debian-packages/*.deb
+```
+
+#### Build Cap'n Proto
+
+SCION requires [Cap'n Proto](https://capnproto.org/). It can be built within the Termux environment:
+
+```
+$ curl -O https://capnproto.org/capnproto-c++-0.6.1.tar.gz
+$ tar zxf capnproto-c++-0.6.1.tar.gz
+$ cd capnproto-c++-0.6.1
+
+make PREFIX=$PREFIX
+make PREFIX=$PREFIX install
+```
+
+## Install SCION
+
+The steps are similar to those from the original repo with a few modifications:
 
 1. Make sure that you have a
    [Go workspace](https://golang.org/doc/code.html#GOPATH) setup, and that
-   `~/.local/bin`, and `$GOPATH/bin` can be found in your `$PATH` variable. For example:
+   `$GOPATH/bin` can be found in your `$PATH` variable. For example:
 
     ```
-    echo 'export GOPATH="$HOME/go"' >> ~/.profile
-    echo 'export PATH="$HOME/.local/bin:$GOPATH/bin:$PATH"' >> ~/.profile
-    source ~/.profile
-    mkdir -p "$GOPATH"
+    $ echo 'export GOPATH="$HOME/go"' >> ~/.profile
+    $ echo 'export PATH="$HOME/.local/bin:$GOPATH/bin:$PATH"' >> ~/.profile
+    $ source ~/.profile
+    $ mkdir -p "$GOPATH"
     ```
 
-1. Check out scion into the appropriate directory inside your go workspace (or
+1. Check out SCION into the appropriate directory inside your go workspace (or
    put a symlink into the go workspace to point to your existing scion
    checkout):
    ```
-   mkdir -p "$GOPATH/src/github.com/scionproto"
-   cd "$GOPATH/src/github.com/scionproto"
-   git clone --recursive git@github.com:scionproto/scion
-   cd scion
+   $ mkdir -p "$GOPATH/src/github.com/scionproto"
+   $ cd "$GOPATH/src/github.com/scionproto"
+   
+   $ git clone --recursive -b termux-modifications git@github.com:stschwar/scion
+   $ cd scion
    ```
    If you don't have a github account, or haven't setup ssh access to it, this
    command will make git use https instead:
    `git config --global url.https://github.com/.insteadOf git@github.com:`
-
-1. Install required packages with dependencies:
-    ```
-    ./env/deps
-    ```
-
-1. Configure the host Zookeeper instance. At a minimum, add `maxClientCnxns=0`
-   to `/etc/zookeeper/conf/zoo.cfg`, but replacing it with `docker/zoo.cfg` is
-   recommended. This has the standard parameters set, as well as using a ram
-   disk for the data log, which greatly improves ZK performance (at the cost of
-   reliability, so it should only be done in a testing environment).
-
-1. Create the topology and configuration files (according to
-   `topology/Default.topo`):
-
-    `./scion.sh topology`
-
-    The resulting directory structure will be created:
-
-        ./gen/ISD{X}/AS{Y}/
-            {elem}{X}-{Y}-{Z}/
-                as.yml
-                path_policy.yml
-                supervisord.conf
-                topology.yml
-                certs/
-                    ISD{X}-AS{Y}-V0.crt
-                    ISD{X}-V0.trc
-                keys/
-                    as-sig.key
-
-   The default topology looks like [this](doc/fig/default-topo.pdf).
-
-1. Run the infrastructure:
-
-    `./scion.sh run`
-
-1. Stop the infrastructure:
-
-    `./scion.sh stop`
-
-Notes about `topology/Default.topo`:
-
-* `defaults.subnet` (optional): override the default subnet of `127.0.0.0/8`.
-
-* `core` (optional): specify if this is a core AS or not (defaults to 'false').
-
-* `beacon_servers`, `certificate_servers`, `path_servers`, (all optional):
-  number of such servers in a specific AS (override the default value 1).
-
-* `links`: keys are `ISD_ID-AS_ID` (format also used for the keys of the JSON
-  file itself) and values can either be `PARENT`, `CHILD`, `PEER`, or
-  `CORE`.
-
-## Tests
-
-In order to run the unit tests:
-
-  `./scion.sh test`
