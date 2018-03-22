@@ -1,0 +1,29 @@
+--- /data/data/com.termux/files/home/../capnproto-c++-0.6.1/src/kj/debug.c++
++++ kj/debug.c++
+@@ -243,26 +243,15 @@
+     StringPtr colon = ": ";
+ 
+     StringPtr sysErrorArray;
+-#if __USE_GNU
+     char buffer[256];
+     if (style == SYSCALL) {
+       if (sysErrorString == nullptr) {
+-        sysErrorArray = strerror_r(errorNumber, buffer, sizeof(buffer));
+-      } else {
+-        sysErrorArray = sysErrorString;
+-      }
+-    }
+-#else
+-    char buffer[256];
+-    if (style == SYSCALL) {
+-      if (sysErrorString == nullptr) {
+         strerror_r(errorNumber, buffer, sizeof(buffer));
+         sysErrorArray = buffer;
+       } else {
+         sysErrorArray = sysErrorString;
+       }
+     }
+-#endif
+ 
+     size_t totalSize = 0;
+     switch (style) {
