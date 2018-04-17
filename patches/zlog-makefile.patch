@@ -1,9 +1,7 @@
-diff --git a/src/makefile b/src/makefile
-index 9bc897f..beec2cb 100644
---- a/src/makefile
-+++ b/src/makefile
-@@ -35,7 +35,7 @@ OPTIMIZATION?=-O2
- WARNINGS=-Wall -Wstrict-prototypes -fwrapv
+--- makefile
++++ makefile_new
+@@ -35,7 +35,7 @@
+ WARNINGS=-Wall -Werror -Wstrict-prototypes -fwrapv
  DEBUG?= -g -ggdb
  REAL_CFLAGS=$(OPTIMIZATION) -fPIC -pthread $(CFLAGS) $(WARNINGS) $(DEBUG)
 -REAL_LDFLAGS=$(LDFLAGS) -pthread
