@@ -45,11 +45,13 @@ cmd_run() {
         bash gen/zk_datalog_dirs.sh || exit 1
     fi
     supervisor/supervisor.sh start all
+    touch .scionrun
 }
 
 cmd_stop() {
     echo "Terminating this run of the SCION infrastructure"
     supervisor/supervisor.sh stop all
+    rm .scionrun
     find /data/data/com.termux/files/run/shm/dispatcher /data/data/com.termux/files/run/shm/sciond -type s -print0 | xargs -r0 rm -v
 }
 
