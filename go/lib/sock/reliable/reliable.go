@@ -35,7 +35,7 @@
 //  13-bytes: [Common header with address type NONE]
 //   1-byte: Command (bit mask with 0x04=Bind address, 0x02=SCMP enable, 0x01 always set)
 //   1-byte: L4 Proto (IANA number)
-//   4-bytes: ISD-AS
+//   8-bytes: ISD-AS
 //   2-bytes: L4 port
 //   1-byte: Address type
 //   var-byte: Address
@@ -74,8 +74,8 @@ import (
 
 var (
 	cookie           = []byte{0xde, 0x00, 0xad, 0x01, 0xbe, 0x02, 0xef, 0x03}
-	regBaseHeaderLen = len(cookie) + 1
-	hdrLen           = regBaseHeaderLen + 4
+	regBaseHeaderLen = 1 + 1 + addr.IABytes + 2 + 1
+	hdrLen           = len(cookie) + 1 + 4
 	// MaxLength contains the maximum payload length for the ReliableSocket framing protocol.
 	MaxLength = (1 << 16) - 1 - hdrLen
 )
@@ -92,6 +92,9 @@ type Msg struct {
 	Copied int
 	Addr   *AppAddr
 }
+
+var _ net.Conn = (*Conn)(nil)
+var _ net.PacketConn = (*Conn)(nil)
 
 // Conn implements the ReliableSocket framing protocol over UNIX sockets.
 type Conn struct {
@@ -144,7 +147,7 @@ func newConn(c net.Conn) *Conn {
 //
 // To check for timeout errors, type assert the returned error to *net.OpError and
 // call method Timeout().
-func RegisterTimeout(dispatcher string, ia *addr.ISD_AS, public, bind *AppAddr, svc addr.HostSVC,
+func RegisterTimeout(dispatcher string, ia addr.IA, public, bind *AppAddr, svc addr.HostSVC,
 	timeout time.Duration) (*Conn, uint16, error) {
 	if public.Addr.Type() == addr.HostTypeNone {
 		return nil, 0, common.NewBasicError("Cannot register with NoneType address", nil)
@@ -174,8 +177,8 @@ func RegisterTimeout(dispatcher string, ia *addr.ISD_AS, public, bind *AppAddr, 
 	offset++
 	request[offset] = byte(common.L4UDP)
 	offset++
-	ia.Write(request[offset : offset+4])
-	offset += 4
+	ia.Write(request[offset:])
+	offset += addr.IABytes
 	n, err := writeAppAddr(request[offset:], public)
 	if err != nil {
 		conn.Close()
@@ -235,7 +238,7 @@ func writeAppAddr(request []byte, a *AppAddr) (int, error) {
 // Register connects to a SCION Dispatcher's UNIX socket.
 // Future messages for address a in AS ia which arrive at the dispatcher can be read by
 // calling Read on the returned Conn structure.
-func Register(dispatcher string, ia *addr.ISD_AS, public, bind *AppAddr,
+func Register(dispatcher string, ia addr.IA, public, bind *AppAddr,
 	svc addr.HostSVC) (*Conn, uint16, error) {
 	return RegisterTimeout(dispatcher, ia, public, bind, svc, time.Duration(0))
 }
@@ -251,7 +254,7 @@ func (conn *Conn) Read(buf []byte) (int, error) {
 
 // ReadFrom works similarly to Read. In addition to Read, it also returns the last hop
 // (usually, the border router) which sent the message.
-func (conn *Conn) ReadFrom(buf []byte) (int, *AppAddr, error) {
+func (conn *Conn) ReadFrom(buf []byte) (int, net.Addr, error) {
 	msgs := make([]Msg, 1)
 	msgs[0].Buffer = buf
 	_, err := conn.ReadN(msgs)
@@ -374,12 +377,15 @@ func (conn *Conn) Write(buf []byte) (int, error) {
 
 // WriteTo works similarly to Write. In addition to Write, the ReliableSocket message header
 // will contain the address and port information in dst.
-func (conn *Conn) WriteTo(buf []byte, dst AppAddr) (int, error) {
+func (conn *Conn) WriteTo(buf []byte, dst net.Addr) (int, error) {
 	conn.writeMutex.Lock()
 	defer conn.writeMutex.Unlock()
-	msgs := make([]Msg, 1)
-	msgs[0].Buffer = buf
-	msgs[0].Addr = &dst
+	msgs := []Msg{
+		{
+			Buffer: buf,
+			Addr:   dst.(*AppAddr),
+		},
+	}
 	for {
 		n, err := conn.writeN(msgs)
 		if err != nil {
@@ -465,7 +471,7 @@ func (conn *Conn) String() string {
 func (conn *Conn) copyMsg(msg *Msg, index, copiedMsgs int) (int, int, error) {
 	var dst *AppAddr
 	if msg.Addr == nil {
-		dst = &NilAppAddr
+		dst = NilAppAddr
 	} else {
 		dst = msg.Addr
 	}

@@ -34,7 +34,7 @@ import (
 var _ fmt.Stringer = (*TRC)(nil)
 
 var (
-	fnTRC    = "testdata/ISD1-V0.trc"
+	fnTRC    = "testdata/ISD1-V1.trc"
 	fnCACert = "testdata/CA1-1.crt"
 )
 
@@ -51,14 +51,14 @@ func Test_TRCFromRaw(t *testing.T) {
 		SoMsg("QuorumCAs", trc.QuorumCAs, ShouldEqual, 3)
 		SoMsg("QuorumTRC", trc.QuorumTRC, ShouldEqual, 2)
 		SoMsg("ThresholdEEPKI", trc.ThresholdEEPKI, ShouldEqual, 2)
-		SoMsg("Version", trc.Version, ShouldEqual, 0)
+		SoMsg("Version", trc.Version, ShouldEqual, 1)
 
 		Convey("CertLogs parsed correctly", func() {
 			SoMsg("Log1", trc.CertLogs["Log1"], ShouldNotBeNil)
 			SoMsg("Log2", trc.CertLogs["Log2"], ShouldNotBeNil)
 			ip := net.ParseIP("127.0.0.75")
 			SoMsg("Log1 addr", trc.CertLogs["Log1"].Addr, ShouldResemble,
-				&Addr{IA: &addr.ISD_AS{I: 1, A: 11}, IP: ip})
+				&Addr{IA: addr.IA{I: 1, A: 11}, IP: ip})
 			SoMsg("Log1 cert", trc.CertLogs["Log1"].Certificate, ShouldResemble,
 				common.RawBytes{0xe3, 0x48, 0x78, 0xbc, 0xee, 0x40, 0x28, 0x71,
 					0x87, 0x93, 0x72, 0x31, 0xa3, 0x7d, 0xaf, 0xcb, 0xf0, 0x07,
@@ -67,9 +67,9 @@ func Test_TRCFromRaw(t *testing.T) {
 		})
 
 		Convey("CoreASes parsed correctly", func() {
-			SoMsg("1-11", trc.CoreASes[addr.ISD_AS{I: 1, A: 11}], ShouldNotBeNil)
-			SoMsg("1-12", trc.CoreASes[addr.ISD_AS{I: 1, A: 12}], ShouldNotBeNil)
-			SoMsg("1-13", trc.CoreASes[addr.ISD_AS{I: 1, A: 13}], ShouldNotBeNil)
+			SoMsg("1-11", trc.CoreASes[addr.IA{I: 1, A: 11}], ShouldNotBeNil)
+			SoMsg("1-12", trc.CoreASes[addr.IA{I: 1, A: 12}], ShouldNotBeNil)
+			SoMsg("1-13", trc.CoreASes[addr.IA{I: 1, A: 13}], ShouldNotBeNil)
 			entry := &CoreAS{OfflineKeyAlg: crypto.Ed25519, OnlineKeyAlg: crypto.Ed25519}
 			entry.OfflineKey = []byte{0x2b, 0x75, 0x84, 0xd7, 0xb4, 0x3d, 0xb3, 0xff,
 				0x38, 0x76, 0x38, 0x9d, 0xd3, 0x44, 0x51, 0x12, 0x77, 0xba, 0x48,
@@ -80,7 +80,7 @@ func Test_TRCFromRaw(t *testing.T) {
 				0x8d, 0xee, 0x4c, 0xf7, 0xc3, 0x70, 0xd5, 0x98, 0xf7, 0x0e, 0x42,
 				0x91, 0xd4}
 
-			SoMsg("CoreAS 1-11", trc.CoreASes[addr.ISD_AS{I: 1, A: 11}], ShouldResemble,
+			SoMsg("CoreAS 1-11", trc.CoreASes[addr.IA{I: 1, A: 11}], ShouldResemble,
 				entry)
 		})
 
@@ -97,7 +97,7 @@ func Test_TRCFromRaw(t *testing.T) {
 					0x8b, 0xdc, 0x0c, 0x78})
 			ip := net.ParseIP("127.0.0.107")
 			SoMsg("TRCSrv", trc.RAINS.TRCSrv[0], ShouldResemble,
-				&Addr{IA: &addr.ISD_AS{I: 1, A: 12}, IP: ip})
+				&Addr{IA: addr.IA{I: 1, A: 12}, IP: ip})
 			SoMsg("TRCSrv size", len(trc.RAINS.TRCSrv), ShouldEqual, 3)
 		})
 
@@ -117,8 +117,8 @@ func Test_TRCFromRaw(t *testing.T) {
 				0x1f, 0xad}
 			ipA := net.ParseIP("127.0.0.70")
 			ipT := net.ParseIP("127.0.0.71")
-			entry.ARPKISrv = []*Addr{{IA: &addr.ISD_AS{I: 1, A: 11}, IP: ipA}}
-			entry.TRCSrv = []*Addr{{IA: &addr.ISD_AS{I: 1, A: 11}, IP: ipT}}
+			entry.ARPKISrv = []*Addr{{IA: addr.IA{I: 1, A: 11}, IP: ipA}}
+			entry.TRCSrv = []*Addr{{IA: addr.IA{I: 1, A: 11}, IP: ipT}}
 			SoMsg("RootCA CA1-1", trc.RootCAs["CA1-1"], ShouldResemble, entry)
 		})
 
@@ -127,13 +127,13 @@ func Test_TRCFromRaw(t *testing.T) {
 			SoMsg("1-12", trc.Signatures["1-12"], ShouldNotBeNil)
 			SoMsg("1-13", trc.Signatures["1-13"], ShouldNotBeNil)
 			SoMsg("Signature 1-11", trc.Signatures["1-11"], ShouldResemble,
-				common.RawBytes{0x4e, 0x93, 0xab, 0x42, 0xfe, 0x37, 0xbe, 0x6a,
-					0x4b, 0x7a, 0x14, 0xb0, 0xff, 0x33, 0xbd, 0x02, 0xe6, 0x5f,
-					0xdd, 0x9f, 0xa9, 0xe6, 0x9b, 0x72, 0x43, 0x3a, 0x32, 0x3c,
-					0xce, 0x4a, 0x7b, 0x8e, 0xcd, 0xdd, 0x6e, 0x3c, 0x16, 0xd5,
-					0x1e, 0x79, 0xfa, 0xf7, 0xf5, 0x19, 0xd7, 0x51, 0x31, 0xdd,
-					0xac, 0xaa, 0x2d, 0x37, 0xe9, 0x4d, 0x1f, 0x5a, 0x9d, 0x7c,
-					0x3a, 0xda, 0x52, 0xc9, 0xf8, 0x0a})
+				common.RawBytes{0x34, 0x8f, 0x8a, 0x99, 0x4f, 0xd0, 0x52, 0x2d,
+					0x2e, 0x49, 0x6b, 0x5c, 0x53, 0x75, 0x9b, 0xc3, 0x93, 0xc6,
+					0xdd, 0x2a, 0x70, 0x43, 0x8d, 0xe7, 0x82, 0x4e, 0x68, 0x2e,
+					0x48, 0x1a, 0x03, 0xd5, 0x30, 0x96, 0x1d, 0x53, 0x79, 0x1d,
+					0xa3, 0xba, 0xbc, 0xee, 0xd9, 0x61, 0xf8, 0x3a, 0x8d, 0x3e,
+					0x49, 0x97, 0xc9, 0xf2, 0xa9, 0x17, 0x26, 0x5c, 0xb3, 0xb4,
+					0x17, 0xcd, 0x3d, 0x7c, 0x42, 0x05})
 		})
 
 	})
@@ -145,7 +145,7 @@ func Test_TRCFromRaw(t *testing.T) {
 	})
 }
 
-type ISDAS []*addr.ISD_AS
+type ISDAS []addr.IA
 
 func (i ISDAS) Len() int           { return len(i) }
 func (i ISDAS) Swap(k, j int)      { i[k], i[j] = i[j], i[k] }
@@ -156,7 +156,7 @@ func Test_TRC_CoreASList(t *testing.T) {
 		trc := loadTRC(fnTRC, t)
 		list := trc.CoreASList()
 		sort.Sort(ISDAS(list))
-		SoMsg("CoreASList", list, ShouldResemble, []*addr.ISD_AS{{I: 1, A: 11},
+		SoMsg("CoreASList", list, ShouldResemble, []addr.IA{{I: 1, A: 11},
 			{I: 1, A: 12}, {I: 1, A: 13}})
 	})
 }
@@ -166,7 +166,7 @@ func Test_TRC_Sign(t *testing.T) {
 		trc := loadTRC(fnTRC, t)
 		packd, _ := trc.sigPack()
 		err := crypto.Verify(packd, trc.Signatures["1-11"],
-			trc.CoreASes[addr.ISD_AS{I: 1, A: 11}].OnlineKey, crypto.Ed25519)
+			trc.CoreASes[addr.IA{I: 1, A: 11}].OnlineKey, crypto.Ed25519)
 		SoMsg("err", err, ShouldBeNil)
 		key := []byte{0xaf, 0x00, 0x0e, 0xb6, 0x26, 0x4f, 0xbd, 0x20, 0xd1, 0x36, 0xed,
 			0xae, 0x42, 0x65, 0xeb, 0x29, 0x15, 0x8e, 0xa6, 0x35, 0xef, 0x3d, 0x2a,
@@ -234,7 +234,7 @@ func Test_TRC_Compress(t *testing.T) {
 func Test_TRC_String(t *testing.T) {
 	Convey("TRC is returned as String correctly", t, func() {
 		trc := loadTRC(fnTRC, t)
-		SoMsg("Compare", trc.String(), ShouldEqual, "TRC 1v0")
+		SoMsg("Compare", trc.String(), ShouldEqual, "TRC 1v1")
 
 	})
 }
@@ -254,7 +254,7 @@ func Test_TRC_IsdVer(t *testing.T) {
 		trc := loadTRC(fnTRC, t)
 		isd, ver := trc.IsdVer()
 		SoMsg("IA", isd, ShouldEqual, 1)
-		SoMsg("Ver", ver, ShouldEqual, 0)
+		SoMsg("Ver", ver, ShouldEqual, 1)
 	})
 }
 
@@ -262,8 +262,8 @@ func Test_TRC_Key(t *testing.T) {
 	Convey("Key is returned correctly", t, func() {
 		trc := loadTRC(fnTRC, t)
 		key := *trc.Key()
-		SoMsg("Key", key, ShouldResemble, Key{ISD: 1, Ver: 0})
-		SoMsg("String", (&key).String(), ShouldResemble, (&Key{ISD: 1, Ver: 0}).String())
+		SoMsg("Key", key, ShouldResemble, Key{ISD: 1, Ver: 1})
+		SoMsg("String", (&key).String(), ShouldResemble, (&Key{ISD: 1, Ver: 1}).String())
 
 	})
 }

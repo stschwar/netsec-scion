@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"strings"
 
 	"github.com/pierrec/lz4"
@@ -48,12 +49,12 @@ const (
 )
 
 type Key struct {
-	IA  addr.ISD_AS
+	IA  addr.IA
 	Ver uint64
 }
 
-func NewKey(ia *addr.ISD_AS, ver uint64) *Key {
-	return &Key{IA: *ia, Ver: ver}
+func NewKey(ia addr.IA, ver uint64) *Key {
+	return &Key{IA: ia, Ver: ver}
 }
 
 func (k *Key) String() string {
@@ -94,7 +95,15 @@ func ChainFromRaw(raw common.RawBytes, lz4_ bool) (*Chain, error) {
 	return c, nil
 }
 
-func (c *Chain) Verify(subject *addr.ISD_AS, t *trc.TRC) error {
+func ChainFromFile(path string, lz4_ bool) (*Chain, error) {
+	raw, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ChainFromRaw(raw, lz4_)
+}
+
+func (c *Chain) Verify(subject addr.IA, t *trc.TRC) error {
 	if c.Leaf.IssuingTime < c.Core.IssuingTime {
 		return common.NewBasicError(LeafIssuedBefore, nil, "leaf",
 			util.TimeToString(c.Leaf.IssuingTime), "core",
@@ -116,7 +125,7 @@ func (c *Chain) Verify(subject *addr.ISD_AS, t *trc.TRC) error {
 			util.TimeToString(c.Core.ExpirationTime), "TRC",
 			util.TimeToString(t.ExpirationTime))
 	}
-	coreAS, ok := t.CoreASes[*c.Core.Issuer]
+	coreAS, ok := t.CoreASes[c.Core.Issuer]
 	if !ok {
 		return common.NewBasicError(IssASNotFound, nil, "isdas", c.Core.Issuer, "coreASes",
 			t.CoreASes)
@@ -163,7 +172,7 @@ func (c *Chain) Eq(o *Chain) bool {
 	return c.Leaf.Eq(o.Leaf) && c.Core.Eq(o.Core)
 }
 
-func (c *Chain) IAVer() (*addr.ISD_AS, uint64) {
+func (c *Chain) IAVer() (addr.IA, uint64) {
 	return c.Leaf.Subject, c.Leaf.Version
 }
 

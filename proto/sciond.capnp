@@ -4,6 +4,7 @@ $Go.package("proto");
 $Go.import("github.com/scionproto/scion/go/proto");
 
 using RevInfo = import "rev_info.capnp";
+using PSeg = import "path_seg.capnp";
 
 struct SCIONDMsg {
     id @0 :UInt64;  # Request ID
@@ -19,12 +20,14 @@ struct SCIONDMsg {
         serviceInfoRequest @9 :ServiceInfoRequest;
         serviceInfoReply @10 :ServiceInfoReply;
         revReply @11 :RevReply;
+        segTypeHopReq @12 :SegTypeHopReq;
+        segTypeHopReply @13 :SegTypeHopReply;
     }
 }
 
 struct PathReq {
-    dst @0 :UInt32;  # Destination ISD-AS
-    src @1 :UInt32 = 0;  # Source ISD-AS
+    dst @0 :UInt64;  # Destination ISD-AS
+    src @1 :UInt64;  # Source ISD-AS
     maxPaths @2: UInt16;  # Maximum number of paths requested
     flags :group {
         flush @3 :Bool;  # Flush all paths to dst.
@@ -57,12 +60,12 @@ struct FwdPathMeta {
 }
 
 struct PathInterface {
-    isdas @0 :UInt32;
+    isdas @0 :UInt64;
     ifID @1 :UInt64;
 }
 
 struct ASInfoReq {
-    isdas @0 :UInt32;  # The AS ID for which the AS Info is requested. If unset, returns info about the local AS(es).
+    isdas @0 :UInt64;  # The AS ID for which the AS Info is requested. If unset, returns info about the local AS(es).
 }
 
 struct ASInfoReply {
@@ -70,7 +73,7 @@ struct ASInfoReply {
 }
 
 struct ASInfoReplyEntry {
-    isdas @0 :UInt32;
+    isdas @0 :UInt64;
     mtu @1 :UInt16;  # The MTU of the AS.
     isCore @2 :Bool;  # True, if this is a core AS.
 }
@@ -116,4 +119,18 @@ struct ServiceInfoReplyEntry {
     serviceType @0 :ServiceInfoRequest.ServiceType;  # The service ID of the service.
     ttl @1 :UInt32;  # The TTL for the service record in seconds (currently unused).
     hostInfos @2 :List(HostInfo);  # The host infos of the service.
+}
+
+struct SegTypeHopReq {
+    type @0 :PSeg.PathSegType;  # The path segments type: up, down, core.
+}
+
+struct SegTypeHopReply {
+    entries @0 :List(SegTypeHopReplyEntry);  # List of path segments matching type request, if any
+}
+
+struct SegTypeHopReplyEntry {
+    interfaces @0 :List(PathInterface);  # List of interfaces for the segment
+    timestamp @1 :UInt64;  # Creation timestamp, seconds since Unix Epoch
+    expTime @2 :UInt64;  # Expiration timestamp, seconds since Unix Epoch
 }

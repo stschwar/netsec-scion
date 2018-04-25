@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"strings"
 	"time"
 
@@ -41,16 +42,17 @@ const (
 	InvalidISD          = "Invalid TRC ISD"
 	InvalidQuorum       = "Not enough valid signatures"
 	InvalidVersion      = "Invalid TRC version"
+	ReservedVersion     = "Invalid version 0"
 	SignatureMissing    = "Signature missing"
 	UnableSigPack       = "TRC: Unable to create signature input"
 )
 
 type Key struct {
-	ISD uint16
+	ISD addr.ISD
 	Ver uint64
 }
 
-func NewKey(isd uint16, ver uint64) *Key {
+func NewKey(isd addr.ISD, ver uint64) *Key {
 	return &Key{ISD: isd, Ver: ver}
 }
 
@@ -61,8 +63,8 @@ func (k *Key) String() string {
 // TRCVerResult is the result of verifying core AS signatures.
 type TRCVerResult struct {
 	Quorum   uint32
-	Verified []*addr.ISD_AS
-	Failed   map[*addr.ISD_AS]error
+	Verified []addr.IA
+	Failed   map[addr.IA]error
 }
 
 func (tvr *TRCVerResult) QuorumOk() bool {
@@ -74,7 +76,7 @@ type TRC struct {
 	// certificate.
 	CertLogs map[string]*CertLog
 	// CoreASes is a map from core ASes to their online and offline key.
-	CoreASes map[addr.ISD_AS]*CoreAS
+	CoreASes map[addr.IA]*CoreAS
 	// CreationTime is the unix timestamp in seconds at which the TRC was created.
 	CreationTime uint64
 	// Description is an human-readable description of the ISD.
@@ -85,7 +87,7 @@ type TRC struct {
 	// seconds.
 	GracePeriod uint64
 	// ISD is the integer identifier from 1 to 4095.
-	ISD uint16
+	ISD addr.ISD
 	// Quarantine describes if the TRC is an early announcement (true) or valid (false).
 	Quarantine bool
 	// QuorumCAs is the quorum of root CAs required to change e RootCAs, CertLogs,
@@ -102,7 +104,7 @@ type TRC struct {
 	// ThresholdEEPKI is the threshold number of trusted parties (CAs and one log) required to
 	// assert a domain’s policy.
 	ThresholdEEPKI uint32
-	// Version is the version number of the TRC
+	// Version is the version number of the TRC. The value 0 is reserved and shall not be used.
 	Version uint64
 }
 
@@ -128,10 +130,21 @@ func TRCFromRaw(raw common.RawBytes, lz4_ bool) (*TRC, error) {
 	if err := json.Unmarshal(raw, t); err != nil {
 		return nil, err
 	}
+	if t.Version == 0 {
+		return nil, common.NewBasicError(ReservedVersion, nil)
+	}
 	return t, nil
 }
 
-func (t *TRC) IsdVer() (uint16, uint64) {
+func TRCFromFile(path string, lz4_ bool) (*TRC, error) {
+	raw, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return TRCFromRaw(raw, lz4_)
+}
+
+func (t *TRC) IsdVer() (addr.ISD, uint64) {
 	return t.ISD, t.Version
 }
 
@@ -140,10 +153,10 @@ func (t *TRC) Key() *Key {
 }
 
 // CoreASList returns a list of core ASes' addresses.
-func (t *TRC) CoreASList() []*addr.ISD_AS {
-	l := make([]*addr.ISD_AS, 0, len(t.CoreASes))
+func (t *TRC) CoreASList() []addr.IA {
+	l := make([]addr.IA, 0, len(t.CoreASes))
 	for key := range t.CoreASes {
-		l = append(l, key.Copy())
+		l = append(l, key)
 	}
 	return l
 }
@@ -232,14 +245,14 @@ func (t *TRC) verifySignatures(old *TRC) (*TRCVerResult, error) {
 	for signer, coreAS := range old.CoreASes {
 		sig, ok := t.Signatures[signer.String()]
 		if !ok {
-			tvr.Failed[signer.Copy()] = common.NewBasicError(SignatureMissing, nil, "as", signer)
+			tvr.Failed[signer] = common.NewBasicError(SignatureMissing, nil, "as", signer)
 			continue
 		}
 		err = crypto.Verify(sigInput, sig, coreAS.OnlineKey, coreAS.OnlineKeyAlg)
 		if err == nil {
-			tvr.Verified = append(tvr.Verified, signer.Copy())
+			tvr.Verified = append(tvr.Verified, signer)
 		} else {
-			tvr.Failed[signer.Copy()] = err
+			tvr.Failed[signer] = err
 		}
 	}
 	if !tvr.QuorumOk() {
@@ -257,6 +270,9 @@ func (t *TRC) verifyXSig(trust *TRC) error {
 
 // sigPack creates a sorted json object of all fields, except for the signature map.
 func (t *TRC) sigPack() (common.RawBytes, error) {
+	if t.Version == 0 {
+		return nil, common.NewBasicError(ReservedVersion, nil)
+	}
 	m := make(map[string]interface{})
 	m["CertLogs"] = t.CertLogs
 	m["CreationTime"] = t.CreationTime

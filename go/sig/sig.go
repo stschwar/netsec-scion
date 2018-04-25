@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"sync/atomic"
 	"syscall"
 
 	log "github.com/inconshreveable/log15"
@@ -53,6 +54,7 @@ var (
 )
 
 func main() {
+	liblog.AddDefaultLogFlags()
 	flag.Parse()
 	if *id == "" {
 		log.Crit("No element ID specified")
@@ -147,7 +149,11 @@ func loadConfig(path string) bool {
 		log.Error("loadConfig: Failed", "err", err)
 		return false
 	}
-	return base.Map.ReloadConfig(cfg)
+	ok := base.Map.ReloadConfig(cfg)
+	if ok {
+		atomic.StoreUint64(&metrics.ConfigVersion, cfg.ConfigVersion)
+	}
+	return ok
 }
 
 func fatal(msg string, args ...interface{}) {

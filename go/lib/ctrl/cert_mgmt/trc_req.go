@@ -26,13 +26,13 @@ import (
 var _ proto.Cerealizable = (*TRCReq)(nil)
 
 type TRCReq struct {
-	ISD       uint16 `capnp:"isd"`
+	ISD       addr.ISD `capnp:"isd"`
 	Version   uint64
 	CacheOnly bool
 }
 
-func (t *TRCReq) IA() *addr.ISD_AS {
-	return &addr.ISD_AS{I: int(t.ISD), A: 0}
+func (t *TRCReq) IA() addr.IA {
+	return addr.IA{I: t.ISD, A: 0}
 }
 
 func (t *TRCReq) ProtoId() proto.ProtoIdType {

@@ -155,7 +155,10 @@ func (h *HostInfo) Host() addr.HostAddr {
 	if len(h.Addrs.Ipv4) > 0 {
 		return addr.HostIPv4(h.Addrs.Ipv4)
 	}
-	return addr.HostIPv6(h.Addrs.Ipv6)
+	if len(h.Addrs.Ipv6) > 0 {
+		return addr.HostIPv6(h.Addrs.Ipv6)
+	}
+	return nil
 }
 
 type FwdPathMeta struct {
@@ -164,18 +167,18 @@ type FwdPathMeta struct {
 	Interfaces []PathInterface
 }
 
-func (fpm FwdPathMeta) SrcIA() *addr.ISD_AS {
+func (fpm FwdPathMeta) SrcIA() addr.IA {
 	ifaces := fpm.Interfaces
 	if len(ifaces) == 0 {
-		return nil
+		return addr.IA{}
 	}
 	return ifaces[0].ISD_AS()
 }
 
-func (fpm FwdPathMeta) DstIA() *addr.ISD_AS {
+func (fpm FwdPathMeta) DstIA() addr.IA {
 	ifaces := fpm.Interfaces
 	if len(ifaces) == 0 {
-		return nil
+		return addr.IA{}
 	}
 	return ifaces[len(ifaces)-1].ISD_AS()
 }
@@ -190,10 +193,10 @@ func (fpm FwdPathMeta) String() string {
 
 type PathInterface struct {
 	RawIsdas addr.IAInt `capnp:"isdas"`
-	IfID     uint64
+	IfID     common.IFIDType
 }
 
-func (iface *PathInterface) ISD_AS() *addr.ISD_AS {
+func (iface *PathInterface) ISD_AS() addr.IA {
 	return iface.RawIsdas.IA()
 }
 
@@ -215,7 +218,7 @@ type ASInfoReplyEntry struct {
 	IsCore   bool
 }
 
-func (entry *ASInfoReplyEntry) ISD_AS() *addr.ISD_AS {
+func (entry *ASInfoReplyEntry) ISD_AS() addr.IA {
 	return entry.RawIsdas.IA()
 }
 
@@ -256,7 +259,7 @@ func (c RevResult) String() string {
 }
 
 type IFInfoRequest struct {
-	IfIDs []uint64
+	IfIDs []common.IFIDType
 }
 
 type IFInfoReply struct {
@@ -264,8 +267,8 @@ type IFInfoReply struct {
 }
 
 // Entries maps IFIDs to their addresses and ports; the map is rebuilt each time.
-func (reply *IFInfoReply) Entries() map[uint64]HostInfo {
-	m := make(map[uint64]HostInfo)
+func (reply *IFInfoReply) Entries() map[common.IFIDType]HostInfo {
+	m := make(map[common.IFIDType]HostInfo)
 
 	for _, entry := range reply.RawEntries {
 		m[entry.IfID] = entry.HostInfo
@@ -275,7 +278,7 @@ func (reply *IFInfoReply) Entries() map[uint64]HostInfo {
 }
 
 type IFInfoReplyEntry struct {
-	IfID     uint64
+	IfID     common.IFIDType
 	HostInfo HostInfo
 }
 
